@@ -1,5 +1,12 @@
 declare const p5;
 
+// 為了讓TypeScript知道window.dispatcher存在
+declare global {
+    interface Window {
+        dispatcher: any;
+    }
+}
+
 new p5(p => {
     const passengerLoadTypes =
         ['Varying', 'Very Light', 'Light', 'Moderate', 'Heavy', 'Very Heavy', 'Insane'];
@@ -9,10 +16,10 @@ new p5(p => {
         const floorDepthOthers = 50;
         return {
             numCars: 4,
-            doorMovementSecs: 0.4,
+            doorMovementSecs: 1,
             doorOpenMs: 2500,
             maxRidersPerCar: 25,
-            numActiveCars: 0,
+            numActiveCars: 4,
             geom: {
                 scaleMetersTo3dUnits: 16,  // Some objects are defined with metric dimensions
                 car: car,
@@ -29,7 +36,7 @@ new p5(p => {
             passengerLoadNumManualLevels: passengerLoadTypes.length - 1, // The first is not manual
             volume: 0,
             speakersType: 0,
-            numFloors: undefined,
+            numFloors: 12, // Default number of floors
             projectionType: undefined
         };
     }
@@ -47,6 +54,45 @@ new p5(p => {
     let talker;
     let ready = false;
 
+    // Create a test floor flow matrix with higher traffic patterns for testing
+    function testFloorFlowMatrix(numFloors) {
+        const matrix = Array(numFloors + 1).fill(0).map(() => Array(numFloors + 1).fill(0));
+        
+        // Set default pattern first
+        for (let i = 1; i <= numFloors; i++) {
+            for (let j = 1; j <= numFloors; j++) {
+                if (i !== j) {
+                    matrix[i][j] = 1; // Default value
+                }
+            }
+        }
+        
+        // Morning rush hour - heavy traffic from lobby (floor 1) to office floors
+        // Simulates people coming to work
+        for (let dest = 2; dest <= numFloors; dest++) {
+            matrix[1][dest] = 5;
+        }
+        
+        // Evening rush hour - heavy traffic from office floors to lobby
+        // Simulates people going home
+        for (let source = 2; source <= numFloors; source++) {
+            matrix[source][1] = 4;
+        }
+        
+        // Lunch time traffic between office floors
+        if (numFloors >= 5) {
+            // Assuming floor 3 has cafeteria
+            for (let floor = 2; floor <= numFloors; floor++) {
+                if (floor !== 3) {
+                    matrix[floor][3] = 3; // People going to lunch
+                    matrix[3][floor] = 3; // People returning from lunch
+                }
+            }
+        }
+        
+        return matrix;
+    }
+
     p.preload = function() {
         p.dingSound = p.loadSound('assets/ding.wav');
     };
@@ -55,7 +101,6 @@ new p5(p => {
         const cg = settings.geom;
         setCanvasSize();
         p.createCanvas(cg.canvas.x, cg.canvas.y, p.WEBGL).parent('main');
-        settings.numFloors = Math.floor(p.height / settings.geom.storyHeight);
         stats = new Stats();
         controls = new Controls(p, settings, stats);
         talker = new Talker(settings);
@@ -63,6 +108,15 @@ new p5(p => {
             cars = Array.from(Array(settings.numCars).keys(), n => new Car(p, settings, stats, n + 1));
             building = new Building(settings, cars);
             dispatcher = new Dispatcher(p, settings, cars, stats, talker);
+            
+            // Apply test floor flow matrix
+            const testMatrix = testFloorFlowMatrix(settings.numFloors);
+            dispatcher.setFloorFlowMatrix(testMatrix);
+            console.log("Applied test floor flow matrix:", testMatrix);
+            
+            // Expose dispatcher to global scope for console access
+            window.dispatcher = dispatcher;
+            
             controls.createKnobs(passengerLoadTypes);
             controls.activeCarsChange = () => dispatcher.updateCarActiveStatuses();
             controls.volumeChange = v => talker.volume(v);
@@ -193,4 +247,23 @@ new p5(p => {
         block();
         p.pop();
     }
+
+    // Allow setting the number of floors from the console
+    window.setNumFloors = function(floors) {
+        if (Number.isInteger(floors) && floors > 1) {
+            settings.numFloors = floors;
+            // Reinitialize the dispatcher's floor flow matrix if it exists
+            if (dispatcher) {
+                dispatcher.initFloorFlow();
+                // Apply test floor flow matrix
+                const testMatrix = testFloorFlowMatrix(settings.numFloors);
+                dispatcher.setFloorFlowMatrix(testMatrix);
+                console.log("Updated floor flow matrix for", settings.numFloors, "floors");
+            }
+            return settings.numFloors;
+        } else {
+            console.error("Number of floors must be a positive integer greater than 1");
+            return settings.numFloors;
+        }
+    };
 });

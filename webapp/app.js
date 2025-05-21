@@ -343,6 +343,71 @@ class Dispatcher {
         this.talker = talker;
         this.carCallQueue = [];
         this.riders = [];
+        // Initialize floor flow matrix
+        this.initFloorFlow();
+    }
+    // Initialize the floor flow matrix based on settings
+    initFloorFlow() {
+        const numFloors = this.settings.numFloors;
+        this.floorFlow = Array(numFloors + 1).fill(0).map(() => Array(numFloors + 1).fill(0));
+        // Set up default flow patterns - this could be parameterized via settings
+        // Higher values for common patterns (e.g., to/from lobby)
+        for (let i = 1; i <= numFloors; i++) {
+            for (let j = 1; j <= numFloors; j++) {
+                if (i !== j) {
+                    // Default flow between any two different floors
+                    this.floorFlow[i][j] = 1;
+                    // Higher traffic to/from lobby (floor 1)
+                    if (i === 1 || j === 1) {
+                        this.floorFlow[i][j] = 3;
+                    }
+                }
+            }
+        }
+    }
+    /**
+     * Set the flow between floors
+     * @param fromFloor Source floor
+     * @param toFloor Destination floor
+     * @param value Flow value (higher means more traffic)
+     */
+    setFloorFlow(fromFloor, toFloor, value) {
+        if (fromFloor >= 1 && fromFloor <= this.settings.numFloors &&
+            toFloor >= 1 && toFloor <= this.settings.numFloors &&
+            fromFloor !== toFloor) {
+            this.floorFlow[fromFloor][toFloor] = value;
+        }
+    }
+    /**
+     * Set the complete floor flow matrix
+     * @param flowMatrix A 2D array representing the flow between floors
+     */
+    setFloorFlowMatrix(flowMatrix) {
+        const numFloors = this.settings.numFloors;
+        // Validate input matrix dimensions
+        if (flowMatrix.length !== numFloors + 1) {
+            console.error("Invalid flow matrix dimensions");
+            return;
+        }
+        for (let i = 1; i <= numFloors; i++) {
+            if (!flowMatrix[i] || flowMatrix[i].length !== numFloors + 1) {
+                console.error("Invalid flow matrix dimensions at row", i);
+                return;
+            }
+            // Copy valid values
+            for (let j = 1; j <= numFloors; j++) {
+                if (i !== j) {
+                    this.floorFlow[i][j] = flowMatrix[i][j];
+                }
+            }
+        }
+    }
+    /**
+     * Get the current floor flow matrix
+     * @returns The current floor flow matrix
+     */
+    getFloorFlowMatrix() {
+        return this.floorFlow;
     }
     requestCar(floor, goingUp) {
         if (!this.carCallQueue.find(request => request.floor === floor && request.goingUp === goingUp)) {
@@ -400,23 +465,83 @@ class Dispatcher {
         this.riders = this.riders.filter(rider => rider.state !== RiderState.Exited);
         this.possiblySpawnNewRider();
     }
+    // Helper function for Poisson distribution
+    poissonRandom(lambda) {
+        let L = Math.exp(-lambda);
+        let k = 0;
+        let p = 1;
+        do {
+            k++;
+            p *= Math.random();
+        } while (p > L);
+        return k - 1;
+    }
     possiblySpawnNewRider() {
         const p = this.p;
-        const randomFloor = () => p.random(1) < 0.5 ? 1 : Math.floor(p.random(this.settings.numFloors) + 1);
+        const numFloors = this.settings.numFloors;
         const load = this.settings.passengerLoad;
-        const desiredPerMin = load === 0 ? // Varying
-            p.map(p.sin(p.millis() / 1e5), -1, 1, 10, 60) :
-            Math.pow(5, load - 1);
-        const desiredPerSec = desiredPerMin / 60;
-        const spawnChance = Math.min(1, desiredPerSec / p.frameRate());
-        if (p.random(1) < spawnChance) {
-            const start = randomFloor();
-            let end = randomFloor();
-            while (start === end) {
-                end = randomFloor();
+        // Calculate arrival rate based on passenger load setting
+        const arrivalRate = load === 0 ?
+            p.map(p.sin(p.millis() / 1e5), -1, 1, 0.1, 0.5) :
+            Math.pow(2, load - 1) * 0.1;
+        // Calculate total flow for each source floor
+        const totalFlowByFloor = Array(numFloors + 1).fill(0);
+        for (let i = 1; i <= numFloors; i++) {
+            for (let j = 1; j <= numFloors; j++) {
+                if (i !== j) {
+                    totalFlowByFloor[i] += this.floorFlow[i][j];
+                }
             }
-            this.riders.push(new Rider(p, this.settings, start, end, this, this.stats, this.talker));
         }
+        // Total flow across all floors
+        const totalFlow = totalFlowByFloor.reduce((sum, flow) => sum + flow, 0);
+        // Special handling for lobby (floor 1)
+        if (p.random(1) < arrivalRate / p.frameRate()) {
+            // Generate passengers from the lobby using a Poisson-like approach
+            const numPassengers = this.poissonRandom(1) + 1; // At least 1 passenger
+            for (let i = 0; i < numPassengers; i++) {
+                // Select a destination floor from the lobby
+                let destFloor = this.selectDestinationFloor(1);
+                this.riders.push(new Rider(p, this.settings, 1, destFloor, this, this.stats, this.talker));
+            }
+        }
+        // For other floors, probability based on flow proportion
+        for (let i = 2; i <= numFloors; i++) {
+            const floorSpawnProbability = (totalFlowByFloor[i] / totalFlow) * arrivalRate / p.frameRate();
+            if (p.random(1) < floorSpawnProbability) {
+                let destFloor = this.selectDestinationFloor(i);
+                this.riders.push(new Rider(p, this.settings, i, destFloor, this, this.stats, this.talker));
+            }
+        }
+    }
+    // Select a destination floor based on the flow matrix probabilities
+    selectDestinationFloor(sourceFloor) {
+        const p = this.p;
+        const numFloors = this.settings.numFloors;
+        // Calculate total flow from this source floor
+        let totalFlowFromSource = 0;
+        for (let j = 1; j <= numFloors; j++) {
+            if (sourceFloor !== j) {
+                totalFlowFromSource += this.floorFlow[sourceFloor][j];
+            }
+        }
+        // Select a destination based on flow proportions
+        let rand = p.random(totalFlowFromSource);
+        let cumulative = 0;
+        for (let j = 1; j <= numFloors; j++) {
+            if (sourceFloor !== j) {
+                cumulative += this.floorFlow[sourceFloor][j];
+                if (rand < cumulative) {
+                    return j;
+                }
+            }
+        }
+        // Fallback - pick a random floor different from source
+        let destFloor = sourceFloor;
+        while (destFloor === sourceFloor) {
+            destFloor = Math.floor(p.random(numFloors)) + 1;
+        }
+        return destFloor;
     }
 }
 /** Manages an elevator rider */
@@ -483,8 +608,9 @@ class Rider {
                 break;
             case RiderState.Boarding:
                 const canceled = this.followPath(this.boardingPath, RiderState.Riding, () => {
-                    this.stats.updateRiderStats('waiting', -1);
-                    this.stats.updateRiderStats('riding', 1, this.weight);
+                    --this.stats.riders.waiting;
+                    ++this.stats.riders.riding;
+                    this.stats.riders.ridingKg += this.weight;
                 }, () => this.carIn.state === CarState.Open);
                 if (canceled) {
                     this.talker.speakRandom('tooLate', undefined, 1);
@@ -540,7 +666,8 @@ class Rider {
             car.removeRider(this);
             this.setExitingPath(car);
             this.millisAtLastMove = this.p.millis();
-            this.stats.updateRiderStats('riding', -1, -this.weight);
+            --this.stats.riders.riding;
+            this.stats.riders.ridingKg -= this.weight;
             ++this.stats.riders.served;
             this.talker.speakRandom('leaving', undefined, 0.1);
             this.state = RiderState.Exiting;
@@ -627,10 +754,10 @@ new p5(p => {
         const floorDepthOthers = 50;
         return {
             numCars: 4,
-            doorMovementSecs: 0.4,
+            doorMovementSecs: 1,
             doorOpenMs: 2500,
             maxRidersPerCar: 25,
-            numActiveCars: 0,
+            numActiveCars: 4,
             geom: {
                 scaleMetersTo3dUnits: 16, // Some objects are defined with metric dimensions
                 car: car,
@@ -647,7 +774,7 @@ new p5(p => {
             passengerLoadNumManualLevels: passengerLoadTypes.length - 1, // The first is not manual
             volume: 0,
             speakersType: 0,
-            numFloors: undefined,
+            numFloors: 12, // Default number of floors
             projectionType: undefined
         };
     }
@@ -662,6 +789,39 @@ new p5(p => {
     let dispatcher;
     let talker;
     let ready = false;
+    // Create a test floor flow matrix with higher traffic patterns for testing
+    function testFloorFlowMatrix(numFloors) {
+        const matrix = Array(numFloors + 1).fill(0).map(() => Array(numFloors + 1).fill(0));
+        // Set default pattern first
+        for (let i = 1; i <= numFloors; i++) {
+            for (let j = 1; j <= numFloors; j++) {
+                if (i !== j) {
+                    matrix[i][j] = 1; // Default value
+                }
+            }
+        }
+        // Morning rush hour - heavy traffic from lobby (floor 1) to office floors
+        // Simulates people coming to work
+        for (let dest = 2; dest <= numFloors; dest++) {
+            matrix[1][dest] = 5;
+        }
+        // Evening rush hour - heavy traffic from office floors to lobby
+        // Simulates people going home
+        for (let source = 2; source <= numFloors; source++) {
+            matrix[source][1] = 4;
+        }
+        // Lunch time traffic between office floors
+        if (numFloors >= 5) {
+            // Assuming floor 3 has cafeteria
+            for (let floor = 2; floor <= numFloors; floor++) {
+                if (floor !== 3) {
+                    matrix[floor][3] = 3; // People going to lunch
+                    matrix[3][floor] = 3; // People returning from lunch
+                }
+            }
+        }
+        return matrix;
+    }
     p.preload = function () {
         p.dingSound = p.loadSound('assets/ding.wav');
     };
@@ -669,7 +829,6 @@ new p5(p => {
         const cg = settings.geom;
         setCanvasSize();
         p.createCanvas(cg.canvas.x, cg.canvas.y, p.WEBGL).parent('main');
-        settings.numFloors = Math.floor(p.height / settings.geom.storyHeight);
         stats = new Stats();
         controls = new Controls(p, settings, stats);
         talker = new Talker(settings);
@@ -677,6 +836,12 @@ new p5(p => {
             cars = Array.from(Array(settings.numCars).keys(), n => new Car(p, settings, stats, n + 1));
             building = new Building(settings, cars);
             dispatcher = new Dispatcher(p, settings, cars, stats, talker);
+            // Apply test floor flow matrix
+            const testMatrix = testFloorFlowMatrix(settings.numFloors);
+            dispatcher.setFloorFlowMatrix(testMatrix);
+            console.log("Applied test floor flow matrix:", testMatrix);
+            // Expose dispatcher to global scope for console access
+            window.dispatcher = dispatcher;
             controls.createKnobs(passengerLoadTypes);
             controls.activeCarsChange = () => dispatcher.updateCarActiveStatuses();
             controls.volumeChange = v => talker.volume(v);
@@ -724,21 +889,21 @@ new p5(p => {
         p.rotateY(rotY);
     }
     function showRiderStats() {
-        const s = stats.getStats();
+        const s = stats.riders;
         const l = s => s.toLocaleString();
         const now = p.millis() / 1000;
         const waitingRiders = dispatcher.riders.filter(r => r.state === RiderState.Waiting);
         const waitSecs = waitingRiders.reduce((accum, rider) => (now - rider.arrivalTime) + accum, 0);
-        const wait = s.currentWaiting ? ` (${l(Math.round(waitSecs))} sec)` : '';
-        const profit = s.payments - s.costs;
+        const wait = s.waiting ? ` (${l(Math.round(waitSecs))} secs)` : '';
+        const profit = s.payments - stats.costs.operating;
         $('#score').html(l(Math.round(Math.max(0, profit / (p.millis() / 1000 / 60)))));
-        $('#waiting').html(`${l(s.totalWaitingTime)} total /sec (${l(s.currentWaiting)} current${wait})`);
-        const weight = s.currentRiding ? ` (${l(s.ridingKg / 1000)} Mg)` : '';
-        $('#riding').html(`${l(s.riding)} total (${l(s.currentRiding)} current${weight})`);
+        $('#waiting').html(`${l(s.waiting)}${wait}`);
+        const weight = s.riding ? ` (${l(s.ridingKg / 1000)} Mg)` : '';
+        $('#riding').html(`${l(s.riding)}${weight}`);
         $('#served').html(l(s.served));
-        const curStyle = { style: 'currency', currency: 'USD' };
+        const curStyle = { style: 'currency', currency: 'usd' };
         $('#payments').html(s.payments.toLocaleString('en-us', curStyle));
-        $('#costs').html(s.costs.toLocaleString('en-us', curStyle));
+        $('#costs').html(stats.costs.operating.toLocaleString('en-us', curStyle));
         $('#profit').html((profit).toLocaleString('en-us', curStyle));
         const g = controls.paymentsChart;
         const yScale = g.height / stats.normalRideCost;
@@ -797,6 +962,25 @@ new p5(p => {
         block();
         p.pop();
     }
+    // Allow setting the number of floors from the console
+    window.setNumFloors = function (floors) {
+        if (Number.isInteger(floors) && floors > 1) {
+            settings.numFloors = floors;
+            // Reinitialize the dispatcher's floor flow matrix if it exists
+            if (dispatcher) {
+                dispatcher.initFloorFlow();
+                // Apply test floor flow matrix
+                const testMatrix = testFloorFlowMatrix(settings.numFloors);
+                dispatcher.setFloorFlowMatrix(testMatrix);
+                console.log("Updated floor flow matrix for", settings.numFloors, "floors");
+            }
+            return settings.numFloors;
+        }
+        else {
+            console.error("Number of floors must be a positive integer greater than 1");
+            return settings.numFloors;
+        }
+    };
 });
 class MotorSound {
     constructor(pan) {
@@ -814,30 +998,17 @@ class Stats {
             waiting: 0,
             served: 0,
             payments: 0,
-            totalRiding: 0,
-            totalWaiting: 0,
-            totalRidingKg: 0,
-            totalWaitingTime: 0,
-            lastUpdateTime: 0
         };
         this.costs = {
             perSec: 0.01,
             perSecPerCar: 0.01,
             perFloor: 0.1,
-            operating: 0,
-            totalOperating: 0
+            operating: 0
         };
         this.normalRideCost = 0.25;
         this.maxRecentRiderPayments = 150;
         this.recentRiderPayments = [];
         this.recentTripTimes = [];
-        this.riders.lastUpdateTime = Date.now() / 1000;
-    }
-    updateWaitingTime() {
-        const currentTime = Date.now() / 1000;
-        const deltaTime = currentTime - this.riders.lastUpdateTime;
-        this.riders.totalWaitingTime += deltaTime * this.riders.waiting;
-        this.riders.lastUpdateTime = currentTime;
     }
     chargeRider(p, tripTime) {
         const penaltyTime = p.constrain(tripTime - 30, 0, 300);
@@ -851,49 +1022,11 @@ class Stats {
         this.riders.payments += rideCost;
     }
     addMovementCosts(numFloors, speed) {
-        const cost = this.costs.perFloor * (1 + speed / 10) * numFloors;
-        this.costs.operating += cost;
-        this.costs.totalOperating += cost;
+        this.costs.operating += this.costs.perFloor * (1 + speed / 10) * numFloors;
     }
     addIdleCosts(secs, numActiveCars) {
-        const baseCost = this.costs.perSec * secs;
-        const carCost = this.costs.perSecPerCar * secs * numActiveCars;
-        this.costs.operating += baseCost + carCost;
-        this.costs.totalOperating += baseCost + carCost;
-        this.updateWaitingTime();
-    }
-    updateRiderStats(type, change, weight = 0) {
-        if (type === 'waiting') {
-            const newWaiting = Math.max(0, this.riders.waiting + change);
-            this.riders.waiting = newWaiting;
-            if (change > 0) {
-                this.riders.totalWaiting += change;
-            }
-        }
-        else if (type === 'riding') {
-            const oldRiding = this.riders.riding;
-            const newRiding = Math.max(0, oldRiding + change);
-            console.log(`Riding change: ${oldRiding} -> ${newRiding} (change: ${change}, weight: ${weight})`);
-            this.riders.riding = newRiding;
-            this.riders.ridingKg = Math.max(0, this.riders.ridingKg + weight);
-            if (change > 0) {
-                this.riders.totalRiding += change;
-                this.riders.totalRidingKg += Math.max(0, weight);
-            }
-        }
-    }
-    getStats() {
-        return {
-            riding: this.riders.totalRiding,
-            ridingKg: this.riders.totalRidingKg,
-            waiting: this.riders.totalWaiting,
-            served: this.riders.served,
-            payments: this.riders.payments,
-            costs: this.costs.totalOperating,
-            currentRiding: this.riders.riding,
-            currentWaiting: this.riders.waiting,
-            totalWaitingTime: Math.round(this.riders.totalWaitingTime)
-        };
+        this.costs.operating += this.costs.perSec * secs;
+        this.costs.operating += this.costs.perSecPerCar * secs * numActiveCars;
     }
 }
 class Talker {
