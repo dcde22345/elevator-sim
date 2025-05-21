@@ -140,21 +140,21 @@ new p5(p => {
     }
 
     function showRiderStats() {
-        const s = stats.riders;
+        const s = stats.getStats();
         const l = s => s.toLocaleString();
         const now = p.millis() / 1000;
         const waitingRiders = dispatcher.riders.filter(r => r.state === RiderState.Waiting);
         const waitSecs = waitingRiders.reduce((accum, rider) => (now - rider.arrivalTime) + accum, 0);
-        const wait = s.waiting ? ` (${l(Math.round(waitSecs))} secs)` : '';
-        const profit = s.payments - stats.costs.operating;
+        const wait = s.currentWaiting ? ` (${l(Math.round(waitSecs))} sec)` : '';
+        const profit = s.payments - s.costs;
         $('#score').html(l(Math.round(Math.max(0, profit / (p.millis() / 1000 / 60)))));
-        $('#waiting').html(`${l(s.waiting)}${wait}`);
-        const weight = s.riding ? ` (${l(s.ridingKg / 1000)} Mg)` : '';
-        $('#riding').html(`${l(s.riding)}${weight}`);
+        $('#waiting').html(`${l(s.totalWaitingTime)} total sec (${l(s.currentWaiting)} current${wait})`);
+        const weight = s.currentRiding ? ` (${l(s.currentRidingKg / 1000)} Mg)` : '';
+        $('#riding').html(`${l(s.riding)} total (${l(s.currentRiding)} current${weight})`);
         $('#served').html(l(s.served));
-        const curStyle = {style: 'currency', currency: 'usd'};
+        const curStyle: Intl.NumberFormatOptions = { style: 'currency', currency: 'USD' };
         $('#payments').html(s.payments.toLocaleString('en-us', curStyle));
-        $('#costs').html(stats.costs.operating.toLocaleString('en-us', curStyle));
+        $('#costs').html(s.costs.toLocaleString('en-us', curStyle));
         $('#profit').html((profit).toLocaleString('en-us', curStyle));
         const g = controls.paymentsChart;
         const yScale = g.height / stats.normalRideCost;

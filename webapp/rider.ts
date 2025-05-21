@@ -74,7 +74,7 @@ class Rider {
             case RiderState.Arriving:
                 this.followPath(this.arrivingPath, RiderState.Waiting, () => {
                     this.talker.speakRandom('arriving', undefined, 0.1);
-                    this.requestCar()
+                    this.requestCar();
                 });
                 break;
             case RiderState.Waiting:
@@ -82,9 +82,8 @@ class Rider {
                 break;
             case RiderState.Boarding:
                 const canceled = this.followPath(this.boardingPath, RiderState.Riding, () => {
-                    --this.stats.riders.waiting;
-                    ++this.stats.riders.riding;
-                    this.stats.riders.ridingKg += this.weight;
+                    this.stats.updateRiderStats('waiting', -1);
+                    this.stats.updateRiderStats('riding', 1, this.weight);
                 }, () => this.carIn.state === CarState.Open);
                 if (canceled) {
                     this.talker.speakRandom('tooLate', undefined, 1);
@@ -142,8 +141,7 @@ class Rider {
             car.removeRider(this);
             this.setExitingPath(car);
             this.millisAtLastMove = this.p.millis();
-            --this.stats.riders.riding;
-            this.stats.riders.ridingKg -= this.weight;
+            this.stats.updateRiderStats('riding', -1, -this.weight);
             ++this.stats.riders.served;
             this.talker.speakRandom('leaving', undefined, 0.1);
             this.state = RiderState.Exiting;

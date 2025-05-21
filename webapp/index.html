@@ -16,38 +16,75 @@
     <style type="text/css">
         body {
             width: 100%;
-            font-family: sans-serif;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background-color: #f8f9fa;
         }
 
-        .label, .hud-text {
-            font-size: 70%;
-            color: black;
-            margin-right: 1em;
+        .label {
+            font-size: 85%;
+            color: #2c3e50;
+            font-weight: 500;
+            display: block;
+            margin-bottom: 2px;
+        }
+
+        .description {
+            font-size: 75%;
+            color: #7f8c8d;
+            display: block;
+            margin-bottom: 8px;
         }
 
         .hud-text {
-            vertical-align: middle;
+            font-size: 85%;
+            color: #3498db;
+            font-weight: bold;
         }
+
         input, select {
-            font-size: 70%;
+            font-size: 85%;
         }
+
         td {
+            padding: 8px 4px;
             vertical-align: top;
         }
+
         #paymentsChart {
             height: 15px;
         }
+
         #nomodules {
             display: none;
         }
+
         #controls {
-            background-color: rgba(255, 255, 255, 0.3);
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .metric-group {
+            border-bottom: 1px solid #eee;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+        }
+
+        .control-group {
+            margin-top: 20px;
+            padding-top: 10px;
+            border-top: 2px solid #eee;
+        }
+
+        input[type="range"] {
+            width: 100%;
         }
     </style>
 </head>
 <body>
 <div id="nomodules">
-    <p>This application uses “ES Modules”, which apparently are not supported or enabled in your browser.</p>
+    <p>This application uses "ES Modules", which apparently are not supported or enabled in your browser.</p>
     <a href="https://jakearchibald.com/2017/es-modules-in-browsers/">More information</a>
 </div>
 <script nomodule>
@@ -59,39 +96,60 @@
     <div class='row'>
         <div class='col-3'>
             <div id='controls'>
-                <table>
-                    <tr>
-                        <td><label for="score" class="label">Score</label></td>
-                        <td id="score"></td>
+                <table style="width: 100%">
+                    <tr class="metric-group">
+                        <td>
+                            <label for="score" class="label">Score</label>
+                            <span class="description">每分鐘平均利潤</span>
+                        </td>
+                        <td id="score" class="hud-text"></td>
                     </tr>
-                    <tr>
-                        <td><label for="waiting" class="label">Waiting</label></td>
-                        <td id="waiting" class='hud-text'></td>
+                    <tr class="metric-group">
+                        <td>
+                            <label for="waiting" class="label">Waiting</label>
+                            <span class="description">總等待時長（秒）<br>當前等待人數<br>目前等待時間</span>
+                        </td>
+                        <td id="waiting" class="hud-text"></td>
                     </tr>
-                    <tr>
-                        <td><label for="riding" class="label">Riding</label></td>
-                        <td id="riding" class='hud-text'></td>
+                    <tr class="metric-group">
+                        <td>
+                            <label for="riding" class="label">Riding</label>
+                            <span class="description">總乘坐人數<br>當前乘客數<br>當前載重</span>
+                        </td>
+                        <td id="riding" class="hud-text"></td>
                     </tr>
-                    <tr>
-                        <td><label for="served" class="label">Served</label></td>
-                        <td id="served" class='hud-text'></td>
+                    <tr class="metric-group">
+                        <td>
+                            <label for="served" class="label">Served</label>
+                            <span class="description">已服務總人數</span>
+                        </td>
+                        <td id="served" class="hud-text"></td>
                     </tr>
-                    <tr>
-                        <td><label for="payments" class="label">Payments</label></td>
-                        <td id="payments" class='hud-text'></td>
+                    <tr class="metric-group">
+                        <td>
+                            <label for="payments" class="label">Payments</label>
+                            <span class="description">總收入</span>
+                        </td>
+                        <td id="payments" class="hud-text"></td>
                     </tr>
                     <tr>
                         <td colspan="2" id="paymentsChart"></td>
                     </tr>
-                    <tr>
-                        <td><label for="costs" class="label">Costs</label></td>
-                        <td id="costs" class='hud-text'></td>
+                    <tr class="metric-group">
+                        <td>
+                            <label for="costs" class="label">Costs</label>
+                            <span class="description">總運營成本</span>
+                        </td>
+                        <td id="costs" class="hud-text"></td>
                     </tr>
-                    <tr>
-                        <td><label for="profit" class="label">Profit</label></td>
-                        <td id="profit" class='hud-text'></td>
+                    <tr class="metric-group">
+                        <td>
+                            <label for="profit" class="label">Profit</label>
+                            <span class="description">總利潤</span>
+                        </td>
+                        <td id="profit" class="hud-text"></td>
                     </tr>
-                    <tr>
+                    <tr class="control-group">
                         <td><label for="numActiveCars" class="label">Active Cars</label></td>
                         <td><input id="numActiveCars" type="range" min="0" max="8" step="1"></td>
                     </tr>
