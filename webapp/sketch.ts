@@ -1,5 +1,16 @@
 declare const p5;
 
+// 直接擴展Window接口
+interface Window {
+    dispatcher: any;
+    setNumFloors: any;
+    getRandomFloorFlow: any;
+}
+
+// 宣告全局函數
+declare function testFloorFlowMatrix(numFloors: number): number[][];
+declare function getRandomFloorFlow(numFloors: number, maxFlowValue?: number, lobbyFactor?: number, p?: any): number[][];
+
 new p5(p => {
     const passengerLoadTypes =
         ['Varying', 'Very Light', 'Light', 'Moderate', 'Heavy', 'Very Heavy', 'Insane'];
@@ -8,16 +19,16 @@ new p5(p => {
         const car = p.createVector(1, 1, 1.3).mult(50);
         const floorDepthOthers = 50;
         return {
-            numCars: 8,
-            doorMovementSecs: 0.4,
+            numCars: 4,
+            doorMovementSecs: 1,
             doorOpenMs: 2500,
             maxRidersPerCar: 25,
-            numActiveCars: 0,
+            numActiveCars: 4,
             geom: {
                 scaleMetersTo3dUnits: 16,  // Some objects are defined with metric dimensions
                 car: car,
                 carCenterZ: -car.z / 2 - floorDepthOthers / 2,
-                storyHeight: car.y * 1.7,
+                storyHeight: car.y * 1,
                 floorDepthGround: floorDepthOthers * 2,
                 floorDepthOthers: floorDepthOthers,
                 canvas: undefined
@@ -29,7 +40,7 @@ new p5(p => {
             passengerLoadNumManualLevels: passengerLoadTypes.length - 1, // The first is not manual
             volume: 0,
             speakersType: 0,
-            numFloors: undefined,
+            numFloors: 13, // Default number of floors
             projectionType: undefined
         };
     }
@@ -55,7 +66,6 @@ new p5(p => {
         const cg = settings.geom;
         setCanvasSize();
         p.createCanvas(cg.canvas.x, cg.canvas.y, p.WEBGL).parent('main');
-        settings.numFloors = Math.floor(p.height / settings.geom.storyHeight);
         stats = new Stats();
         controls = new Controls(p, settings, stats);
         talker = new Talker(settings);
@@ -63,6 +73,17 @@ new p5(p => {
             cars = Array.from(Array(settings.numCars).keys(), n => new Car(p, settings, stats, n + 1));
             building = new Building(settings, cars);
             dispatcher = new Dispatcher(p, settings, cars, stats, talker);
+            
+            // Apply test floor flow matrix
+            const testMatrix = testFloorFlowMatrix(settings.numFloors);
+            dispatcher.setFloorFlowMatrix(testMatrix);
+            console.log("Applied test floor flow matrix:", testMatrix);
+            
+            // Expose dispatcher and utility functions to global scope for console access
+            window.dispatcher = dispatcher;
+            window.getRandomFloorFlow = (numFloors, maxFlowValue, lobbyFactor) => 
+                getRandomFloorFlow(numFloors || settings.numFloors, maxFlowValue, lobbyFactor, p);
+            
             controls.createKnobs(passengerLoadTypes);
             controls.activeCarsChange = () => dispatcher.updateCarActiveStatuses();
             controls.volumeChange = v => talker.volume(v);
@@ -193,4 +214,23 @@ new p5(p => {
         block();
         p.pop();
     }
+
+    // Allow setting the number of floors from the console
+    window.setNumFloors = function(floors) {
+        if (Number.isInteger(floors) && floors > 1) {
+            settings.numFloors = floors;
+            // Reinitialize the dispatcher's floor flow matrix if it exists
+            if (dispatcher) {
+                dispatcher.initFloorFlow();
+                // Apply test floor flow matrix
+                const testMatrix = testFloorFlowMatrix(settings.numFloors);
+                dispatcher.setFloorFlowMatrix(testMatrix);
+                console.log("Updated floor flow matrix for", settings.numFloors, "floors");
+            }
+            return settings.numFloors;
+        } else {
+            console.error("Number of floors must be a positive integer greater than 1");
+            return settings.numFloors;
+        }
+    };
 });
