@@ -28,18 +28,18 @@ class Dispatcher {
     // Initialize the floor flow matrix based on settings
     private initFloorFlow() {
         const numFloors = this.settings.numFloors;
-        this.floorFlow = Array(numFloors + 1).fill(0).map(() => Array(numFloors + 1).fill(0));
+        this.floorFlow = Array(numFloors).fill(0).map(() => Array(numFloors).fill(0));
         
         // Set up default flow patterns - this could be parameterized via settings
-        // Higher values for common patterns (e.g., to/from lobby)
-        for (let i = 1; i <= numFloors; i++) {
-            for (let j = 1; j <= numFloors; j++) {
+        // 現在索引0=一樓，索引1=二樓，依此類推
+        for (let i = 0; i < numFloors; i++) {
+            for (let j = 0; j < numFloors; j++) {
                 if (i !== j) {
                     // Default flow between any two different floors
                     this.floorFlow[i][j] = 1;
 
-                    // Higher traffic to/from lobby (floor 1)
-                    if (i === 1 || j === 1) {
+                    // Higher traffic to/from lobby (first floor, index 0)
+                    if (i === 0 || j === 0) {
                         this.floorFlow[i][j] = 3;
                     }
                 }
@@ -49,15 +49,19 @@ class Dispatcher {
 
     /**
      * Set the flow between floors
-     * @param fromFloor Source floor
-     * @param toFloor Destination floor
+     * @param fromFloor Source floor (1-based, 1 means first floor)
+     * @param toFloor Destination floor (1-based)
      * @param value Flow value (higher means more traffic)
      */
     setFloorFlow(fromFloor: number, toFloor: number, value: number) {
-        if (fromFloor >= 1 && fromFloor <= this.settings.numFloors &&
-            toFloor >= 1 && toFloor <= this.settings.numFloors &&
-            fromFloor !== toFloor) {
-            this.floorFlow[fromFloor][toFloor] = value;
+        // 轉換1-based樓層號碼到0-based索引
+        const fromIndex = fromFloor - 1;
+        const toIndex = toFloor - 1;
+        
+        if (fromIndex >= 0 && fromIndex < this.settings.numFloors &&
+            toIndex >= 0 && toIndex < this.settings.numFloors &&
+            fromIndex !== toIndex) {
+            this.floorFlow[fromIndex][toIndex] = value;
         }
     }
 
@@ -68,21 +72,24 @@ class Dispatcher {
     setFloorFlowMatrix(flowMatrix: number[][]) {
         const numFloors = this.settings.numFloors;
         
-        // Validate input matrix dimensions
-        if (flowMatrix.length !== numFloors + 1) {
-            console.error("Invalid flow matrix dimensions");
+        // 檢查矩陣尺寸是否符合樓層數
+        if (flowMatrix.length !== numFloors) {
+            console.error(`Invalid flow matrix dimensions: expected ${numFloors} floors`);
             return;
         }
         
-        for (let i = 1; i <= numFloors; i++) {
-            if (!flowMatrix[i] || flowMatrix[i].length !== numFloors + 1) {
-                console.error("Invalid flow matrix dimensions at row", i);
+        // 重新初始化矩陣
+        this.floorFlow = Array(numFloors).fill(0).map(() => Array(numFloors).fill(0));
+        
+        // 複製有效值
+        for (let i = 0; i < numFloors; i++) {
+            if (!flowMatrix[i] || flowMatrix[i].length !== numFloors) {
+                console.error(`Invalid flow matrix dimensions at row ${i}: expected ${numFloors} columns`);
                 return;
             }
             
-            // Copy valid values
-            for (let j = 1; j <= numFloors; j++) {
-                if (i !== j) {
+            for (let j = 0; j < numFloors; j++) {
+                if (i !== j) { // 忽略從一樓到一樓的流量
                     this.floorFlow[i][j] = flowMatrix[i][j];
                 }
             }
@@ -94,6 +101,7 @@ class Dispatcher {
      * @returns The current floor flow matrix
      */
     getFloorFlowMatrix(): number[][] {
+        // 直接返回內部矩陣，因為現在索引已經與樓層對應
         return this.floorFlow;
     }
 
@@ -184,10 +192,21 @@ class Dispatcher {
             p.map(p.sin(p.millis() / 1e5), -1, 1, 0.1, 0.5) : 
             Math.pow(2, load - 1) * 0.1;
             
-        // Calculate total flow for each source floor
-        const totalFlowByFloor = Array(numFloors + 1).fill(0);
-        for (let i = 1; i <= numFloors; i++) {
-            for (let j = 1; j <= numFloors; j++) {
+        // Calculate total flow for each source floor to leave the elevator
+        /*
+            example:
+            floor 1: [0, 100, 200, 300, 400]
+            floor 2: [100, 0, 100, 200, 300]
+            floor 3: [200, 100, 0, 100, 200]
+            floor 4: [300, 200, 100, 0, 100]
+            floor 5: [400, 300, 200, 100, 0]
+            total flow: 5000
+            total flow by floor: [1000, 1000, 1000, 1000, 1000]
+        */
+
+        const totalFlowByFloor = Array(numFloors).fill(0);
+        for (let i = 0; i < numFloors; i++) {
+            for (let j = 0; j < numFloors; j++) {
                 if (i !== j) {
                     totalFlowByFloor[i] += this.floorFlow[i][j];
                 }
@@ -197,7 +216,8 @@ class Dispatcher {
         // Total flow across all floors
         const totalFlow = totalFlowByFloor.reduce((sum, flow) => sum + flow, 0);
         
-        // Special handling for lobby (floor 1)
+
+        // Special handling for lobby (first floor, index 0)
         if (p.random(1) < arrivalRate / p.frameRate()) {
             // Generate passengers from the lobby using a Poisson-like approach
             const numPassengers = this.poissonRandom(1) + 1; // At least 1 passenger
@@ -205,18 +225,20 @@ class Dispatcher {
             for (let i = 0; i < numPassengers; i++) {
                 // Select a destination floor from the lobby
                 let destFloor = this.selectDestinationFloor(1);
-                this.riders.push(new Rider(p, this.settings, 1, destFloor, this, this.stats, this.talker));
+                // 注意：Rider仍使用1-based樓層編號，所以轉換回來
+                this.riders.push(new Rider(p, this.settings, 2, destFloor + 1, this, this.stats, this.talker));
             }
         }
         
         // For other floors, probability based on flow proportion
-        for (let i = 2; i <= numFloors; i++) {
+        for (let i = 0; i < numFloors; i++) {
+            if (i === 1) continue; // 👈 如果你已經上面處理過 index 1（Lobby），這裡略過
             const floorSpawnProbability = (totalFlowByFloor[i] / totalFlow) * arrivalRate / p.frameRate();
             if (p.random(1) < floorSpawnProbability) {
                 let destFloor = this.selectDestinationFloor(i);
-                this.riders.push(new Rider(p, this.settings, i, destFloor, this, this.stats, this.talker));
+                this.riders.push(new Rider(p, this.settings, i + 1, destFloor + 1, this, this.stats, this.talker));
             }
-        }
+        }        
     }
     
     // Select a destination floor based on the flow matrix probabilities
@@ -226,7 +248,7 @@ class Dispatcher {
         
         // Calculate total flow from this source floor
         let totalFlowFromSource = 0;
-        for (let j = 1; j <= numFloors; j++) {
+        for (let j = 0; j < numFloors; j++) {
             if (sourceFloor !== j) {
                 totalFlowFromSource += this.floorFlow[sourceFloor][j];
             }
@@ -236,7 +258,7 @@ class Dispatcher {
         let rand = p.random(totalFlowFromSource);
         let cumulative = 0;
         
-        for (let j = 1; j <= numFloors; j++) {
+        for (let j = 0; j < numFloors; j++) {
             if (sourceFloor !== j) {
                 cumulative += this.floorFlow[sourceFloor][j];
                 if (rand < cumulative) {
@@ -248,7 +270,7 @@ class Dispatcher {
         // Fallback - pick a random floor different from source
         let destFloor = sourceFloor;
         while (destFloor === sourceFloor) {
-            destFloor = Math.floor(p.random(numFloors)) + 1;
+            destFloor = Math.floor(p.random(numFloors));
         }
         return destFloor;
     }
