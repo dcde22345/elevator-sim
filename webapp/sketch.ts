@@ -148,8 +148,8 @@ new p5(p => {
         const wait = s.currentWaiting ? ` (${l(Math.round(waitSecs))} sec)` : '';
         const profit = s.payments - s.costs;
         $('#score').html(l(Math.round(Math.max(0, profit / (p.millis() / 1000 / 60)))));
-        $('#waiting').html(`${l(s.totalWaitingTime)} total /sec (${l(s.currentWaiting)} current${wait})`);
-        const weight = s.currentRiding ? ` (${l(s.ridingKg / 1000)} Mg)` : '';
+        $('#waiting').html(`${l(s.totalWaitingTime)} total sec (${l(s.currentWaiting)} current${wait})`);
+        const weight = s.currentRiding ? ` (${l(s.currentRidingKg / 1000)} Mg)` : '';
         $('#riding').html(`${l(s.riding)} total (${l(s.currentRiding)} current${weight})`);
         $('#served').html(l(s.served));
         const curStyle: Intl.NumberFormatOptions = { style: 'currency', currency: 'USD' };

@@ -90,7 +90,8 @@ class Stats {
             costs: this.costs.totalOperating,
             currentRiding: this.riders.riding,
             currentWaiting: this.riders.waiting,
-            totalWaitingTime: Math.round(this.riders.totalWaitingTime)
+            totalWaitingTime: Math.round(this.riders.totalWaitingTime),
+            currentRidingKg: this.riders.ridingKg
         };
     }
 }
