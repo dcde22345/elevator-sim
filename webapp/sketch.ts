@@ -1,11 +1,15 @@
 declare const p5;
 
-// 為了讓TypeScript知道window.dispatcher存在
-declare global {
-    interface Window {
-        dispatcher: any;
-    }
+// 直接擴展Window接口
+interface Window {
+    dispatcher: any;
+    setNumFloors: any;
+    getRandomFloorFlow: any;
 }
+
+// 宣告全局函數
+declare function testFloorFlowMatrix(numFloors: number): number[][];
+declare function getRandomFloorFlow(numFloors: number, maxFlowValue?: number, lobbyFactor?: number, p?: any): number[][];
 
 new p5(p => {
     const passengerLoadTypes =
@@ -24,7 +28,7 @@ new p5(p => {
                 scaleMetersTo3dUnits: 16,  // Some objects are defined with metric dimensions
                 car: car,
                 carCenterZ: -car.z / 2 - floorDepthOthers / 2,
-                storyHeight: car.y * 1.7,
+                storyHeight: car.y * 1,
                 floorDepthGround: floorDepthOthers * 2,
                 floorDepthOthers: floorDepthOthers,
                 canvas: undefined
@@ -36,7 +40,7 @@ new p5(p => {
             passengerLoadNumManualLevels: passengerLoadTypes.length - 1, // The first is not manual
             volume: 0,
             speakersType: 0,
-            numFloors: 12, // Default number of floors
+            numFloors: 13, // Default number of floors
             projectionType: undefined
         };
     }
@@ -53,45 +57,6 @@ new p5(p => {
     let dispatcher;
     let talker;
     let ready = false;
-
-    // Create a test floor flow matrix with higher traffic patterns for testing
-    function testFloorFlowMatrix(numFloors) {
-        const matrix = Array(numFloors + 1).fill(0).map(() => Array(numFloors + 1).fill(0));
-        
-        // Set default pattern first
-        for (let i = 1; i <= numFloors; i++) {
-            for (let j = 1; j <= numFloors; j++) {
-                if (i !== j) {
-                    matrix[i][j] = 1; // Default value
-                }
-            }
-        }
-        
-        // Morning rush hour - heavy traffic from lobby (floor 1) to office floors
-        // Simulates people coming to work
-        for (let dest = 2; dest <= numFloors; dest++) {
-            matrix[1][dest] = 5;
-        }
-        
-        // Evening rush hour - heavy traffic from office floors to lobby
-        // Simulates people going home
-        for (let source = 2; source <= numFloors; source++) {
-            matrix[source][1] = 4;
-        }
-        
-        // Lunch time traffic between office floors
-        if (numFloors >= 5) {
-            // Assuming floor 3 has cafeteria
-            for (let floor = 2; floor <= numFloors; floor++) {
-                if (floor !== 3) {
-                    matrix[floor][3] = 3; // People going to lunch
-                    matrix[3][floor] = 3; // People returning from lunch
-                }
-            }
-        }
-        
-        return matrix;
-    }
 
     p.preload = function() {
         p.dingSound = p.loadSound('assets/ding.wav');
@@ -114,8 +79,10 @@ new p5(p => {
             dispatcher.setFloorFlowMatrix(testMatrix);
             console.log("Applied test floor flow matrix:", testMatrix);
             
-            // Expose dispatcher to global scope for console access
+            // Expose dispatcher and utility functions to global scope for console access
             window.dispatcher = dispatcher;
+            window.getRandomFloorFlow = (numFloors, maxFlowValue, lobbyFactor) => 
+                getRandomFloorFlow(numFloors || settings.numFloors, maxFlowValue, lobbyFactor, p);
             
             controls.createKnobs(passengerLoadTypes);
             controls.activeCarsChange = () => dispatcher.updateCarActiveStatuses();
