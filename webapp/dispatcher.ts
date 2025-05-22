@@ -105,35 +105,112 @@ class Dispatcher {
         return this.floorFlow;
     }
 
-    requestCar(floor, goingUp) {
-        if (! this.carCallQueue.find(request => request.floor === floor && request.goingUp === goingUp)) {
-            this.carCallQueue.push({floor: floor, goingUp: goingUp});
+    // 20250522 Ella 修改：處理乘客請求
+    requestCar(startFloor: number, goingUp: boolean, destFloor?: number) {
+        // 找出可以同時服務起始樓層和目標樓層的電梯
+        const eligibleCars = this.activeCars().filter(car => {
+            const canStopAtStart = car.canStopAt(startFloor);
+            // 如果有指定目標樓層，也要檢查
+            if (destFloor !== undefined) {
+                return canStopAtStart && car.canStopAt(destFloor);
+            }
+            return canStopAtStart;
+        });
+
+        if (eligibleCars.length === 0) {
+            const errorMsg = destFloor !== undefined ?
+                `警告：沒有電梯可以從 ${this.floorNumberToString(startFloor)} 樓到達 ${this.floorNumberToString(destFloor)} 樓` :
+                `警告：沒有電梯可以服務 ${this.floorNumberToString(startFloor)} 樓`;
+            console.log(errorMsg);
+            return;
+        }
+
+        // 檢查是否已有相同的請求
+        if (!this.carCallQueue.find(request => 
+            request.floor === startFloor && request.goingUp === goingUp)) {
+            
+            this.carCallQueue.push({
+                floor: startFloor,
+                goingUp: goingUp,
+                destFloor: destFloor, // 新增目標樓層資訊
+                requestTime: Date.now()
+            });
+
+            console.log(`新增電梯請求：${this.floorNumberToString(startFloor)} 樓${
+                destFloor !== undefined ? ` 到 ${this.floorNumberToString(destFloor)} 樓` : ''
+            }，方向：${goingUp ? '向上' : '向下'}`);
+            console.log(`可用電梯：${eligibleCars.map(car => car.getCarNumber()).join(', ')}號`);
         }
     }
 
+    // 20250522 Ella 修改：主要處理邏輯
     process() {
         this.processRiders();
-
+        
         if (this.settings.controlMode === 0 /* Auto */) {
             const request = this.carCallQueue.shift();
-
             if (request) {
                 const floorY = this.p.yFromFloor(request.floor);
-                const activeCars = this.activeCars();
-                const idleCars = activeCars.filter(car => car.state === CarState.Idle && car.goingUp === request.goingUp);
+                
+                // 20250522 Ella 修改：只考慮可以停靠該樓層的電梯
+                const eligibleCars = this.activeCars().filter(car => 
+                    car.canStopAt(request.floor)
+                );
+
+                // 在符合條件的電梯中找最近的閒置電梯
+                const idleCars = eligibleCars.filter(car => 
+                    car.state === CarState.Idle && car.goingUp === request.goingUp
+                );
+                
+                // 計算距離的輔助函數
                 const dist = car => Math.abs(car.y - floorY);
-                const closest = cars => cars.reduce((a, b) => a && b ? dist(a) > dist(b) ? b : a : b, undefined);
-                const closestIdleActiveCar = closest(idleCars);
-                if (closestIdleActiveCar) {
-                    closestIdleActiveCar.goTo(request.floor);
+                const closest = cars => cars.reduce((a, b) => 
+                    a && b ? dist(a) > dist(b) ? b : a : b, undefined
+                );
+
+                // 尋找最近的閒置電梯
+                const closestIdleCar = closest(idleCars);
+                if (closestIdleCar) {
+                    this.assignElevator(closestIdleCar, request);
                 } else {
-                    const closestActiveCar = closest(activeCars);
-                    if (closestActiveCar)
-                        closestActiveCar.goTo(request.floor);
-                    else this.carCallQueue.push(request);
+                    // 如果沒有閒置電梯，找最近的可用電梯
+                    const closestEligibleCar = closest(eligibleCars);
+                    if (closestEligibleCar) {
+                        this.assignElevator(closestEligibleCar, request);
+                    } else {
+                        // 如果沒有合適的電梯，請求重新入隊
+                        this.carCallQueue.push(request);
+                        console.log(`請求重新入隊：${this.floorNumberToString(request.floor)} 樓，因為沒有可用電梯`);
+                    }
                 }
             }
         }
+    }
+    // 20250522 Ella 修改：新增輔助方法
+    private assignElevator(car: Car, request: any) {
+        car.goTo(request.floor);
+        console.log(`分配 ${car.getCarNumber()} 號電梯到 ${this.floorNumberToString(request.floor)} 樓`);
+        console.log(`等待時間：${((Date.now() - request.requestTime) / 1000).toFixed(1)} 秒`);
+    }
+
+    // 20250522 Ella 修改：樓層號碼轉換為顯示文字
+    private floorNumberToString(floor: number): string {
+        return floor === -1 ? 'B1' : floor.toString();
+    }
+
+    // 20250522 Ella 修改：檢查電梯是否可以前往目標樓層
+    private canCarGoToFloor(car: Car, floor: number): boolean {
+        return car.canStopAt(floor);
+    }
+
+    // 20250522 Ella 修改：獲取電梯可停靠樓層資訊
+    public getElevatorInfo(): string {
+        return this.cars.map(car => {
+            const floors = car.getAllowedFloors()
+                .map(f => this.floorNumberToString(f))
+                .join(', ');
+            return `${car.getCarNumber()}號電梯可停靠樓層：${floors}`;
+        }).join('\n');
     }
 
     /** Returns an array of active cars, selected from the middle of the group, moving outward */
@@ -236,7 +313,10 @@ class Dispatcher {
             const floorSpawnProbability = (totalFlowByFloor[i] / totalFlow) * arrivalRate / p.frameRate();
             if (p.random(1) < floorSpawnProbability) {
                 let destFloor = this.selectDestinationFloor(i);
-                this.riders.push(new Rider(p, this.settings, i + 1, destFloor + 1, this, this.stats, this.talker));
+                // 只有當目標樓層不等於起始樓層時才生成乘客
+                if (destFloor !== i) {
+                    this.riders.push(new Rider(p, this.settings, i + 1, destFloor + 1, this, this.stats, this.talker));
+                }
             }
         }        
     }
@@ -246,32 +326,43 @@ class Dispatcher {
         const p = this.p;
         const numFloors = this.settings.numFloors;
         
-        // Calculate total flow from this source floor
-        let totalFlowFromSource = 0;
-        for (let j = 0; j < numFloors; j++) {
-            if (sourceFloor !== j) {
-                totalFlowFromSource += this.floorFlow[sourceFloor][j];
+        // 找出所有可以從 sourceFloor 到達的樓層
+        const accessibleFloors = this.activeCars().reduce((floors, car) => {
+            // 只有當電梯可以同時停靠起點和終點時，該樓層才是可達的
+            if (car.canStopAt(sourceFloor)) {
+                for (let floor = 0; floor < numFloors; floor++) {
+                    if (floor !== sourceFloor && car.canStopAt(floor)) {
+                        floors.add(floor);
+                    }
+                }
             }
+            return floors;
+        }, new Set<number>());
+
+        // 如果沒有可達的樓層，返回原樓層（乘客不會生成）
+        if (accessibleFloors.size === 0) {
+            return sourceFloor;
         }
-        
-        // Select a destination based on flow proportions
+
+        // 將 flow matrix 限制在可達樓層內
+        let totalFlowFromSource = 0;
+        for (const destFloor of accessibleFloors) {
+            totalFlowFromSource += this.floorFlow[sourceFloor][destFloor];
+        }
+
+        // 在可達樓層中選擇目標
         let rand = p.random(totalFlowFromSource);
         let cumulative = 0;
         
-        for (let j = 0; j < numFloors; j++) {
-            if (sourceFloor !== j) {
-                cumulative += this.floorFlow[sourceFloor][j];
-                if (rand < cumulative) {
-                    return j;
-                }
+        for (const destFloor of accessibleFloors) {
+            cumulative += this.floorFlow[sourceFloor][destFloor];
+            if (rand < cumulative) {
+                return destFloor;
             }
         }
-        
-        // Fallback - pick a random floor different from source
-        let destFloor = sourceFloor;
-        while (destFloor === sourceFloor) {
-            destFloor = Math.floor(p.random(numFloors));
-        }
-        return destFloor;
+
+        // 如果還是沒選到，隨機選擇一個可達樓層
+        const accessibleFloorsArray = Array.from(accessibleFloors) as number[];
+        return accessibleFloorsArray[Math.floor(p.random(accessibleFloorsArray.length))];
     }
 }
