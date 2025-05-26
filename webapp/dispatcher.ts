@@ -143,6 +143,31 @@ class Dispatcher {
         }
     }
 
+    // 20250522 Ella 新增：為特定乘客請求電梯，繞過重複檢查
+    requestCarForSpecificRider(startFloor: number, goingUp: boolean, destFloor: number, rider: any) {
+        // 找出可以同時服務起始樓層和目標樓層的電梯
+        const eligibleCars = this.activeCars().filter(car => {
+            return car.canStopAt(startFloor) && car.canStopAt(destFloor);
+        });
+
+        if (eligibleCars.length === 0) {
+            console.log(`警告：沒有電梯可以從 ${this.floorNumberToString(startFloor)} 樓到達 ${this.floorNumberToString(destFloor)} 樓`);
+            return;
+        }
+
+        // 強制添加請求，不檢查重複
+        this.carCallQueue.push({
+            floor: startFloor,
+            goingUp: goingUp,
+            destFloor: destFloor,
+            requestTime: Date.now(),
+            specificRider: rider  // 標記特定乘客
+        });
+
+        console.log(`為特定乘客重新請求電梯：${this.floorNumberToString(startFloor)} 樓到 ${this.floorNumberToString(destFloor)} 樓`);
+        console.log(`可用電梯：${eligibleCars.map(car => car.getCarNumber()).join(', ')}號`);
+    }
+
     // 20250522 Ella 修改：主要處理邏輯
     process() {
         this.processRiders();
@@ -164,9 +189,28 @@ class Dispatcher {
                 
                 // 計算距離的輔助函數
                 const dist = car => Math.abs(car.y - floorY);
-                const closest = cars => cars.reduce((a, b) => 
-                    a && b ? dist(a) > dist(b) ? b : a : b, undefined
-                );
+                
+                // 20250522 Ella 修改：當距離相同時隨機選擇電梯
+                const closest = cars => {
+                    if (cars.length === 0) return undefined;
+                    if (cars.length === 1) return cars[0];
+                    
+                    // 找出最小距離
+                    const minDistance = Math.min(...cars.map(car => dist(car)));
+                    
+                    // 找出所有距離最小的電梯
+                    const closestCars = cars.filter(car => dist(car) === minDistance);
+                    
+                    // 如果只有一台電梯距離最近，直接返回
+                    if (closestCars.length === 1) {
+                        return closestCars[0];
+                    }
+                    
+                    // 如果有多台電梯距離相同，隨機選擇一台
+                    const randomIndex = Math.floor(Math.random() * closestCars.length);
+                    console.log(`距離相同的電梯：${closestCars.map(car => car.getCarNumber()).join(', ')}號，隨機選擇：${closestCars[randomIndex].getCarNumber()}號`);
+                    return closestCars[randomIndex];
+                };
 
                 // 尋找最近的閒置電梯
                 const closestIdleCar = closest(idleCars);

@@ -15,6 +15,7 @@ class Talker {
         leaving: ['thank you, elevator', 'thanks', 'bye', 'so long', 'good times', 'far out', 'namaste'],
         tooLate: ['darn it!', 'stupid elevator', 'oh, i missed it', 'i ran as fast as i could', 'bummer'],
         carFull: ['that\'s a full car', 'a lot of people', 'too crowded', 'wow, full', 'full'],
+        wrongElevator: ['wrong elevator', 'this one can\'t go there', 'need different elevator', 'can\'t reach that floor', 'wrong car']
     };
     private voices: any;
     private englishVoices: any;

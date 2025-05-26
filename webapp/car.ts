@@ -44,7 +44,7 @@ class Car {
         const leftRightMargin = settings.geom.canvas.x - carsGroupWidth;
         this.carLeftMargin = leftRightMargin / 2;
         this.y = p.yFromFloor(2); //每部電梯的預設起始位置都是在 1 樓
-        this.goingUp = true;
+        this.goingUp = false;
         this.doorOpenFraction = 0;  // 0…1 = closed…open
         this.destFloors = [];
         this.riders = [];
@@ -242,7 +242,25 @@ class Car {
 
     idle(p) {
         if (this.destFloors.length) {
-            // 20250522 Ella 修改：改進 Scan Algorithm 實現
+            const currentFloor = p.floorFromY(this.y);
+            
+            // 20250522 Ella 修改：智能方向判斷
+            // 檢查上下方向是否有目標樓層
+            const hasUpperFloors = this.destFloors.some(f => f > currentFloor && this.canStopAt(f));
+            const hasLowerFloors = this.destFloors.some(f => f < currentFloor && this.canStopAt(f));
+            
+            // 在1樓時的特殊處理：優先考慮實際目標方向
+            if (currentFloor === 1) {
+                if (hasUpperFloors && !hasLowerFloors) {
+                    this.goingUp = true;   // 只有上層請求時向上
+                } else if (hasLowerFloors && !hasUpperFloors) {
+                    this.goingUp = false;  // 只有下層請求時向下
+                } else if (hasUpperFloors && hasLowerFloors) {
+                    // 兩個方向都有請求時，保持當前方向或選擇較近的
+                    // 這裡可以保持當前方向，或者選擇距離較近的方向
+                }
+            }
+            
             // 1. 先根據當前方向找尋目標樓層
             let nextDest = this.destFloors.find(f => {
                 const floorY = p.yFromFloor(f);

@@ -1,5 +1,5 @@
 /** Manages an elevator rider */
-enum RiderState {Arriving, Waiting, Boarding, Riding, Exiting, Exited}
+enum RiderState {Arriving, ArrivedAndCalling, Waiting, Boarding, Riding, Exiting, Exited}
 
 class Rider {
     private readonly p: any;
@@ -72,10 +72,14 @@ class Rider {
         const p = this.p;
         switch (this.state) {
             case RiderState.Arriving:
-                this.followPath(this.arrivingPath, RiderState.Waiting, () => {
+                this.followPath(this.arrivingPath, RiderState.ArrivedAndCalling, () => {
                     this.talker.speakRandom('arriving', undefined, 0.1);
-                    this.requestCar();
                 });
+                break;
+            case RiderState.ArrivedAndCalling:
+                // 乘客已到達，現在呼叫電梯
+                this.requestCar();
+                this.state = RiderState.Waiting;
                 break;
             case RiderState.Waiting:
                 this.waitForCar();
@@ -106,27 +110,44 @@ class Rider {
     }
 
     requestCar() {
-        this.dispatcher.requestCar(this.startFloor, this.destFloor > this.startFloor);
+        this.dispatcher.requestCar(this.startFloor, this.destFloor > this.startFloor, this.destFloor);
     }
 
     waitForCar() {
         const goingUp = this.destFloor > this.startFloor;
         const yThisFloor = this.p.yFromFloor(this.startFloor);
         let suitableExceptFullEncountered = false;
+        
         const suitableCar = this.dispatcher.activeCars().find(car => {
             const allButRoom = car.state === CarState.Open && car.y === yThisFloor &&
                 (this.settings.controlMode === 1 || car.goingUp === goingUp);
             if (allButRoom && ! car.hasRoom()) suitableExceptFullEncountered = true;
             return allButRoom && car.hasRoom();
         });
+        
         if (suitableCar) {
-            this.carIn = suitableCar;
-            this.carIn.addRider(this);
-            this.carIn.goTo(this.destFloor);
-            this.setBoardingPath(suitableCar);
-            this.millisAtLastMove = this.p.millis();
-            this.state = RiderState.Boarding;
-        } else if (suitableExceptFullEncountered) this.talker.speakRandom('carFull', undefined, 0.3);
+            if (suitableCar.canStopAt(this.destFloor)) {
+                this.carIn = suitableCar;
+                this.carIn.addRider(this);
+                this.carIn.goTo(this.destFloor);
+                this.setBoardingPath(suitableCar);
+                this.millisAtLastMove = this.p.millis();
+                this.state = RiderState.Boarding;
+            } else {
+                // 電梯無法到達目的樓層
+                // 使用新的方法重新請求電梯
+                if (this.dispatcher.requestCarForSpecificRider) {
+                    this.dispatcher.requestCarForSpecificRider(this.startFloor, goingUp, this.destFloor, this);
+                } else {
+                    // 備用方案：延遲後重新請求
+                    setTimeout(() => {
+                        this.requestCar();
+                    }, 100);
+                }
+            }
+        } else if (suitableExceptFullEncountered) {
+            this.talker.speakRandom('carFull', undefined, 0.3);
+        }
     }
 
     outsideDoorPos(openCar) {
@@ -230,3 +251,4 @@ class Rider {
         return pg;
     }
 }
+
