@@ -59,8 +59,8 @@ class Car {
         const carsGroupWidth = settings.numCars * gc.x + (settings.numCars - 1) * interCarSpacing;
         const leftRightMargin = settings.geom.canvas.x - carsGroupWidth;
         this.carLeftMargin = leftRightMargin / 2;
-        this.y = p.yFromFloor(1);
-        this.goingUp = true;
+        this.y = p.yFromFloor(2); //每部電梯的預設起始位置都是在 1 樓
+        this.goingUp = false;
         this.doorOpenFraction = 0; // 0…1 = closed…open
         this.destFloors = [];
         this.riders = [];
@@ -68,6 +68,49 @@ class Car {
         this.sound = new MotorSound(this.pan);
         this.active = false;
         this.state = CarState.Idle;
+        this.allowedFloors = this.initAllowedFloors(carNumber); // 20250522 Ella 修改：初始化各電梯可停靠樓層
+    }
+    // 20250522 Ella 修改：初始化各電梯可停靠樓層
+    initAllowedFloors(carNumber) {
+        // B1樓層用-1表示
+        switch (carNumber) {
+            case 1:
+                // 第一部電梯：停靠所有樓層（B1～12）
+                return [-1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+            case 2:
+                // 第二部電梯：僅停靠（B1、1、6、7、8、9、10、11、12）
+                return [-1, 1, 2, 7, 8, 9, 10, 11, 12, 13];
+            case 3:
+                // 第三部電梯：僅停靠（1、4、6、8、10、12）
+                return [1, 2, 4, 6, 8, 10, 12, 13];
+            case 4:
+                // 第四部電梯：僅停靠（1、3、5、7、9、11）
+                return [1, 2, 3, 5, 7, 9, 11, 13];
+            default:
+                return [1]; // 預設情況
+        }
+    }
+    // 20250522 Ella 修改：檢查電梯是否可停靠指定樓層
+    canStopAt(floor) {
+        // 20250522 Ella 修改：加入額外的安全檢查
+        // 3號和4號電梯不能到B1樓
+        if (floor === -1 && (this.carNumber === 3 || this.carNumber === 4)) {
+            console.log(`警告：${this.carNumber}號電梯不能前往B1樓`);
+            return false;
+        }
+        const canStop = this.allowedFloors.includes(floor);
+        if (!canStop) {
+            console.log(`警告：${this.carNumber}號電梯不能前往${floor === -1 ? 'B1' : floor}樓`);
+        }
+        return canStop;
+    }
+    // 20250522 Ella 修改：獲取可停靠樓層列表
+    getAllowedFloors() {
+        return [...this.allowedFloors];
+    }
+    // 20250522 Ella 修改：獲取電梯編號
+    getCarNumber() {
+        return this.carNumber;
     }
     draw() {
         this.drawRails();
@@ -196,25 +239,59 @@ class Car {
     }
     idle(p) {
         if (this.destFloors.length) {
-            let nextDest = this.destFloors.find(f => this.goingUp ? p.yFromFloor(f) > this.y : p.yFromFloor(f) < this.y);
+            const currentFloor = p.floorFromY(this.y);
+            // 20250522 Ella 修改：智能方向判斷
+            // 檢查上下方向是否有目標樓層
+            const hasUpperFloors = this.destFloors.some(f => f > currentFloor && this.canStopAt(f));
+            const hasLowerFloors = this.destFloors.some(f => f < currentFloor && this.canStopAt(f));
+            // 在1樓時的特殊處理：優先考慮實際目標方向
+            if (currentFloor === 1) {
+                if (hasUpperFloors && !hasLowerFloors) {
+                    this.goingUp = true; // 只有上層請求時向上
+                }
+                else if (hasLowerFloors && !hasUpperFloors) {
+                    this.goingUp = false; // 只有下層請求時向下
+                }
+                else if (hasUpperFloors && hasLowerFloors) {
+                    // 兩個方向都有請求時，保持當前方向或選擇較近的
+                    // 這裡可以保持當前方向，或者選擇距離較近的方向
+                }
+            }
+            // 1. 先根據當前方向找尋目標樓層
+            let nextDest = this.destFloors.find(f => {
+                const floorY = p.yFromFloor(f);
+                // 確保目標樓層在允許範圍內
+                if (!this.canStopAt(f))
+                    return false;
+                if (this.goingUp) {
+                    return floorY > this.y; // 向上時找更高樓層
+                }
+                else {
+                    return floorY < this.y; // 向下時找更低樓層
+                }
+            });
+            // 2. 如果當前方向沒有目標，則改變方向
             if (!nextDest) {
                 this.goingUp = !this.goingUp;
                 this.sortDestinations();
-                nextDest = this.destFloors[0];
+                // 取得新方向的第一個合法目標
+                nextDest = this.destFloors.find(f => this.canStopAt(f));
             }
-            this.stats.addMovementCosts(Math.abs(p.floorFromY(this.y) - nextDest), this.settings.elevSpeed);
-            this.state = CarState.Moving;
-            this.sound.osc.amp(p.map(this.settings.volume, 0, 10, 0, 0.6), 0.02);
-            console.log(`Car ${this.carNumber} moving to ${nextDest} of ${this.destFloors}`);
-            this.lastMoveTime = p.millis() / 1000;
-            this.speed = 0;
-            this.maxMaxSpeed = 1000;
-            this.maxSpeed = p.map(this.settings.elevSpeed, 1, 10, 20, this.maxMaxSpeed);
-            this.accel = this.maxSpeed * 2;
-            this.startY = this.y;
-            this.endY = p.yFromFloor(nextDest);
-            this.absTrip = Math.abs(this.startY - this.endY);
-            this.accelDistance = Math.min(this.absTrip / 2, (this.maxSpeed * this.maxSpeed) / (2 * this.accel));
+            if (nextDest) {
+                this.stats.addMovementCosts(Math.abs(p.floorFromY(this.y) - nextDest), this.settings.elevSpeed);
+                this.state = CarState.Moving;
+                this.sound.osc.amp(p.map(this.settings.volume, 0, 10, 0, 0.6), 0.02);
+                console.log(`${this.carNumber}號電梯移動至 ${nextDest === -1 ? 'B1' : nextDest} 樓，方向：${this.goingUp ? '向上' : '向下'}`);
+                this.lastMoveTime = p.millis() / 1000;
+                this.speed = 0;
+                this.maxMaxSpeed = 1000;
+                this.maxSpeed = p.map(this.settings.elevSpeed, 1, 10, 20, this.maxMaxSpeed);
+                this.accel = this.maxSpeed * 2;
+                this.startY = this.y;
+                this.endY = p.yFromFloor(nextDest);
+                this.absTrip = Math.abs(this.startY - this.endY);
+                this.accelDistance = Math.min(this.absTrip / 2, (this.maxSpeed * this.maxSpeed) / (2 * this.accel));
+            }
         }
     }
     move(p) {
@@ -240,10 +317,26 @@ class Car {
             this.doorOpStarted = this.nowSecs();
             this.state = CarState.Opening;
             this.removeCurrentFloorFromDest();
-            if (this.y === p.yFromFloor(1))
-                this.goingUp = true;
-            if (this.y === p.yFromFloor(this.settings.numFloors))
+            // 20250522 Ella 修改：特殊樓層處理邏輯
+            const currentFloor = p.floorFromY(this.y);
+            // 在一樓時，如果向下方向沒有請求，則改為向上
+            if (currentFloor === 1) {
+                const hasDownwardRequests = this.destFloors.some(f => f < 1 && this.canStopAt(f));
+                if (!hasDownwardRequests) {
+                    this.goingUp = true;
+                    this.sortDestinations();
+                }
+            }
+            // 在頂樓時強制向下
+            if (currentFloor === this.settings.numFloors) {
                 this.goingUp = false;
+                this.sortDestinations();
+            }
+            // 在B1樓時強制向上
+            if (currentFloor === -1) {
+                this.goingUp = true;
+                this.sortDestinations();
+            }
             if (this.settings.volume > 0) {
                 p.dingSound.pan(this.pan);
                 p.dingSound.play();
@@ -269,6 +362,11 @@ class Car {
         this.destFloors = this.destFloors.filter(f => this.p.yFromFloor(f) !== this.y);
     }
     goTo(floor, manual = false) {
+        // 20250522 Ella 修改：檢查是否為允許停靠的樓層
+        if (!this.canStopAt(floor)) {
+            console.log(`警告：${this.carNumber}號電梯不能停靠 ${floor === -1 ? 'B1' : floor} 樓`);
+            return;
+        }
         if (manual || this.settings.controlMode === 0 /* Auto */) {
             if (!this.destFloors.find(f => f === floor)) {
                 this.destFloors.push(floor);
@@ -278,7 +376,18 @@ class Car {
         }
     }
     sortDestinations() {
-        this.destFloors.sort((a, b) => this.goingUp ? a - b : b - a);
+        // 只排序可以停靠的樓層
+        const validDestinations = this.destFloors.filter(f => this.canStopAt(f));
+        // 根據方向排序
+        validDestinations.sort((a, b) => {
+            if (this.goingUp) {
+                return a - b; // 向上時按升序排列
+            }
+            else {
+                return b - a; // 向下時按降序排列
+            }
+        });
+        this.destFloors = validDestinations;
     }
 }
 class Controls {
@@ -415,34 +524,131 @@ class Dispatcher {
         // 直接返回內部矩陣，因為現在索引已經與樓層對應
         return this.floorFlow;
     }
-    requestCar(floor, goingUp) {
-        if (!this.carCallQueue.find(request => request.floor === floor && request.goingUp === goingUp)) {
-            this.carCallQueue.push({ floor: floor, goingUp: goingUp });
+    // 20250522 Ella 修改：處理乘客請求
+    requestCar(startFloor, goingUp, destFloor) {
+        // 找出可以同時服務起始樓層和目標樓層的電梯
+        const eligibleCars = this.activeCars().filter(car => {
+            const canStopAtStart = car.canStopAt(startFloor);
+            // 如果有指定目標樓層，也要檢查
+            if (destFloor !== undefined) {
+                return canStopAtStart && car.canStopAt(destFloor);
+            }
+            return canStopAtStart;
+        });
+        if (eligibleCars.length === 0) {
+            const errorMsg = destFloor !== undefined ?
+                `警告：沒有電梯可以從 ${this.floorNumberToString(startFloor)} 樓到達 ${this.floorNumberToString(destFloor)} 樓` :
+                `警告：沒有電梯可以服務 ${this.floorNumberToString(startFloor)} 樓`;
+            console.log(errorMsg);
+            return;
+        }
+        // 檢查是否已有相同的請求
+        if (!this.carCallQueue.find(request => request.floor === startFloor && request.goingUp === goingUp)) {
+            this.carCallQueue.push({
+                floor: startFloor,
+                goingUp: goingUp,
+                destFloor: destFloor, // 新增目標樓層資訊
+                requestTime: Date.now()
+            });
+            console.log(`新增電梯請求：${this.floorNumberToString(startFloor)} 樓${destFloor !== undefined ? ` 到 ${this.floorNumberToString(destFloor)} 樓` : ''}，方向：${goingUp ? '向上' : '向下'}`);
+            console.log(`可用電梯：${eligibleCars.map(car => car.getCarNumber()).join(', ')}號`);
         }
     }
+    // 20250522 Ella 新增：為特定乘客請求電梯，繞過重複檢查
+    requestCarForSpecificRider(startFloor, goingUp, destFloor, rider) {
+        // 找出可以同時服務起始樓層和目標樓層的電梯
+        const eligibleCars = this.activeCars().filter(car => {
+            return car.canStopAt(startFloor) && car.canStopAt(destFloor);
+        });
+        if (eligibleCars.length === 0) {
+            console.log(`警告：沒有電梯可以從 ${this.floorNumberToString(startFloor)} 樓到達 ${this.floorNumberToString(destFloor)} 樓`);
+            return;
+        }
+        // 強制添加請求，不檢查重複
+        this.carCallQueue.push({
+            floor: startFloor,
+            goingUp: goingUp,
+            destFloor: destFloor,
+            requestTime: Date.now(),
+            specificRider: rider // 標記特定乘客
+        });
+        console.log(`為特定乘客重新請求電梯：${this.floorNumberToString(startFloor)} 樓到 ${this.floorNumberToString(destFloor)} 樓`);
+        console.log(`可用電梯：${eligibleCars.map(car => car.getCarNumber()).join(', ')}號`);
+    }
+    // 20250522 Ella 修改：主要處理邏輯
     process() {
         this.processRiders();
         if (this.settings.controlMode === 0 /* Auto */) {
             const request = this.carCallQueue.shift();
             if (request) {
                 const floorY = this.p.yFromFloor(request.floor);
-                const activeCars = this.activeCars();
-                const idleCars = activeCars.filter(car => car.state === CarState.Idle && car.goingUp === request.goingUp);
+                // 20250522 Ella 修改：只考慮可以停靠該樓層的電梯
+                const eligibleCars = this.activeCars().filter(car => car.canStopAt(request.floor));
+                // 在符合條件的電梯中找最近的閒置電梯
+                const idleCars = eligibleCars.filter(car => car.state === CarState.Idle && car.goingUp === request.goingUp);
+                // 計算距離的輔助函數
                 const dist = car => Math.abs(car.y - floorY);
-                const closest = cars => cars.reduce((a, b) => a && b ? dist(a) > dist(b) ? b : a : b, undefined);
-                const closestIdleActiveCar = closest(idleCars);
-                if (closestIdleActiveCar) {
-                    closestIdleActiveCar.goTo(request.floor);
+                // 20250522 Ella 修改：當距離相同時隨機選擇電梯
+                const closest = cars => {
+                    if (cars.length === 0)
+                        return undefined;
+                    if (cars.length === 1)
+                        return cars[0];
+                    // 找出最小距離
+                    const minDistance = Math.min(...cars.map(car => dist(car)));
+                    // 找出所有距離最小的電梯
+                    const closestCars = cars.filter(car => dist(car) === minDistance);
+                    // 如果只有一台電梯距離最近，直接返回
+                    if (closestCars.length === 1) {
+                        return closestCars[0];
+                    }
+                    // 如果有多台電梯距離相同，隨機選擇一台
+                    const randomIndex = Math.floor(Math.random() * closestCars.length);
+                    console.log(`距離相同的電梯：${closestCars.map(car => car.getCarNumber()).join(', ')}號，隨機選擇：${closestCars[randomIndex].getCarNumber()}號`);
+                    return closestCars[randomIndex];
+                };
+                // 尋找最近的閒置電梯
+                const closestIdleCar = closest(idleCars);
+                if (closestIdleCar) {
+                    this.assignElevator(closestIdleCar, request);
                 }
                 else {
-                    const closestActiveCar = closest(activeCars);
-                    if (closestActiveCar)
-                        closestActiveCar.goTo(request.floor);
-                    else
+                    // 如果沒有閒置電梯，找最近的可用電梯
+                    const closestEligibleCar = closest(eligibleCars);
+                    if (closestEligibleCar) {
+                        this.assignElevator(closestEligibleCar, request);
+                    }
+                    else {
+                        // 如果沒有合適的電梯，請求重新入隊
                         this.carCallQueue.push(request);
+                        console.log(`請求重新入隊：${this.floorNumberToString(request.floor)} 樓，因為沒有可用電梯`);
+                    }
                 }
             }
         }
+    }
+    // 20250522 Ella 修改：新增輔助方法
+    assignElevator(car, request) {
+        car.goTo(request.floor);
+        console.log(`分配 ${car.getCarNumber()} 號電梯到 ${this.floorNumberToString(request.floor)} 樓`);
+        console.log(`等待時間：${((Date.now() - request.requestTime) / 1000).toFixed(1)} 秒`);
+    }
+    // 20250522 Ella 修改：樓層號碼轉換為顯示文字
+    floorNumberToString(floor) {
+        return floor === -1 ? 'B1' : floor.toString();
+    }
+    // 20250522 Ella 修改：檢查電梯是否可以前往目標樓層
+    canCarGoToFloor(car, floor) {
+        return car.canStopAt(floor);
+    }
+    // 20250522 Ella 修改：獲取電梯可停靠樓層資訊
+    getElevatorInfo() {
+        return this.cars.map(car => {
+            const floors = car.getAllowedFloors()
+                .map(f => this.floorNumberToString(f))
+                .join(', ');
+            return `${car.getCarNumber()}號電梯可停靠樓層：${floors}`;
+        }).join('\n');
     }
     /** Returns an array of active cars, selected from the middle of the group, moving outward */
     activeCars() {
@@ -529,7 +735,10 @@ class Dispatcher {
             const floorSpawnProbability = (totalFlowByFloor[i] / totalFlow) * arrivalRate / p.frameRate();
             if (p.random(1) < floorSpawnProbability) {
                 let destFloor = this.selectDestinationFloor(i);
-                this.riders.push(new Rider(p, this.settings, i + 1, destFloor + 1, this, this.stats, this.talker));
+                // 只有當目標樓層不等於起始樓層時才生成乘客
+                if (destFloor !== i) {
+                    this.riders.push(new Rider(p, this.settings, i + 1, destFloor + 1, this, this.stats, this.talker));
+                }
             }
         }
     }
@@ -537,41 +746,51 @@ class Dispatcher {
     selectDestinationFloor(sourceFloor) {
         const p = this.p;
         const numFloors = this.settings.numFloors;
-        // Calculate total flow from this source floor
-        let totalFlowFromSource = 0;
-        for (let j = 0; j < numFloors; j++) {
-            if (sourceFloor !== j) {
-                totalFlowFromSource += this.floorFlow[sourceFloor][j];
-            }
-        }
-        // Select a destination based on flow proportions
-        let rand = p.random(totalFlowFromSource);
-        let cumulative = 0;
-        for (let j = 0; j < numFloors; j++) {
-            if (sourceFloor !== j) {
-                cumulative += this.floorFlow[sourceFloor][j];
-                if (rand < cumulative) {
-                    return j;
+        // 找出所有可以從 sourceFloor 到達的樓層
+        const accessibleFloors = this.activeCars().reduce((floors, car) => {
+            // 只有當電梯可以同時停靠起點和終點時，該樓層才是可達的
+            if (car.canStopAt(sourceFloor)) {
+                for (let floor = 0; floor < numFloors; floor++) {
+                    if (floor !== sourceFloor && car.canStopAt(floor)) {
+                        floors.add(floor);
+                    }
                 }
             }
+            return floors;
+        }, new Set());
+        // 如果沒有可達的樓層，返回原樓層（乘客不會生成）
+        if (accessibleFloors.size === 0) {
+            return sourceFloor;
         }
-        // Fallback - pick a random floor different from source
-        let destFloor = sourceFloor;
-        while (destFloor === sourceFloor) {
-            destFloor = Math.floor(p.random(numFloors));
+        // 將 flow matrix 限制在可達樓層內
+        let totalFlowFromSource = 0;
+        for (const destFloor of accessibleFloors) {
+            totalFlowFromSource += this.floorFlow[sourceFloor][destFloor];
         }
-        return destFloor;
+        // 在可達樓層中選擇目標
+        let rand = p.random(totalFlowFromSource);
+        let cumulative = 0;
+        for (const destFloor of accessibleFloors) {
+            cumulative += this.floorFlow[sourceFloor][destFloor];
+            if (rand < cumulative) {
+                return destFloor;
+            }
+        }
+        // 如果還是沒選到，隨機選擇一個可達樓層
+        const accessibleFloorsArray = Array.from(accessibleFloors);
+        return accessibleFloorsArray[Math.floor(p.random(accessibleFloorsArray.length))];
     }
 }
 /** Manages an elevator rider */
 var RiderState;
 (function (RiderState) {
     RiderState[RiderState["Arriving"] = 0] = "Arriving";
-    RiderState[RiderState["Waiting"] = 1] = "Waiting";
-    RiderState[RiderState["Boarding"] = 2] = "Boarding";
-    RiderState[RiderState["Riding"] = 3] = "Riding";
-    RiderState[RiderState["Exiting"] = 4] = "Exiting";
-    RiderState[RiderState["Exited"] = 5] = "Exited";
+    RiderState[RiderState["ArrivedAndCalling"] = 1] = "ArrivedAndCalling";
+    RiderState[RiderState["Waiting"] = 2] = "Waiting";
+    RiderState[RiderState["Boarding"] = 3] = "Boarding";
+    RiderState[RiderState["Riding"] = 4] = "Riding";
+    RiderState[RiderState["Exiting"] = 5] = "Exiting";
+    RiderState[RiderState["Exited"] = 6] = "Exited";
 })(RiderState || (RiderState = {}));
 class Rider {
     constructor(p, settings, startFloor, destFloor, dispatcher, stats, talker) {
@@ -617,19 +836,22 @@ class Rider {
         const p = this.p;
         switch (this.state) {
             case RiderState.Arriving:
-                this.followPath(this.arrivingPath, RiderState.Waiting, () => {
+                this.followPath(this.arrivingPath, RiderState.ArrivedAndCalling, () => {
                     this.talker.speakRandom('arriving', undefined, 0.1);
-                    this.requestCar();
                 });
+                break;
+            case RiderState.ArrivedAndCalling:
+                // 乘客已到達，現在呼叫電梯
+                this.requestCar();
+                this.state = RiderState.Waiting;
                 break;
             case RiderState.Waiting:
                 this.waitForCar();
                 break;
             case RiderState.Boarding:
                 const canceled = this.followPath(this.boardingPath, RiderState.Riding, () => {
-                    --this.stats.riders.waiting;
-                    ++this.stats.riders.riding;
-                    this.stats.riders.ridingKg += this.weight;
+                    this.stats.updateRiderStats('waiting', -1);
+                    this.stats.updateRiderStats('riding', 1, this.weight);
                 }, () => this.carIn.state === CarState.Open);
                 if (canceled) {
                     this.talker.speakRandom('tooLate', undefined, 1);
@@ -651,7 +873,7 @@ class Rider {
         }
     }
     requestCar() {
-        this.dispatcher.requestCar(this.startFloor, this.destFloor > this.startFloor);
+        this.dispatcher.requestCar(this.startFloor, this.destFloor > this.startFloor, this.destFloor);
     }
     waitForCar() {
         const goingUp = this.destFloor > this.startFloor;
@@ -665,15 +887,31 @@ class Rider {
             return allButRoom && car.hasRoom();
         });
         if (suitableCar) {
-            this.carIn = suitableCar;
-            this.carIn.addRider(this);
-            this.carIn.goTo(this.destFloor);
-            this.setBoardingPath(suitableCar);
-            this.millisAtLastMove = this.p.millis();
-            this.state = RiderState.Boarding;
+            if (suitableCar.canStopAt(this.destFloor)) {
+                this.carIn = suitableCar;
+                this.carIn.addRider(this);
+                this.carIn.goTo(this.destFloor);
+                this.setBoardingPath(suitableCar);
+                this.millisAtLastMove = this.p.millis();
+                this.state = RiderState.Boarding;
+            }
+            else {
+                // 電梯無法到達目的樓層
+                // 使用新的方法重新請求電梯
+                if (this.dispatcher.requestCarForSpecificRider) {
+                    this.dispatcher.requestCarForSpecificRider(this.startFloor, goingUp, this.destFloor, this);
+                }
+                else {
+                    // 備用方案：延遲後重新請求
+                    setTimeout(() => {
+                        this.requestCar();
+                    }, 100);
+                }
+            }
         }
-        else if (suitableExceptFullEncountered)
+        else if (suitableExceptFullEncountered) {
             this.talker.speakRandom('carFull', undefined, 0.3);
+        }
     }
     outsideDoorPos(openCar) {
         return this.p.createVector(openCar.carCenterX() + this.fuzz(2), this.pos.y, openCar.settings.geom.carCenterZ + this.carGeom.z + this.fuzz(2));
@@ -685,8 +923,7 @@ class Rider {
             car.removeRider(this);
             this.setExitingPath(car);
             this.millisAtLastMove = this.p.millis();
-            --this.stats.riders.riding;
-            this.stats.riders.ridingKg -= this.weight;
+            this.stats.updateRiderStats('riding', -1, -this.weight);
             ++this.stats.riders.served;
             this.talker.speakRandom('leaving', undefined, 0.1);
             this.state = RiderState.Exiting;
@@ -876,21 +1113,21 @@ new p5(p => {
         p.rotateY(rotY);
     }
     function showRiderStats() {
-        const s = stats.riders;
+        const s = stats.getStats();
         const l = s => s.toLocaleString();
         const now = p.millis() / 1000;
         const waitingRiders = dispatcher.riders.filter(r => r.state === RiderState.Waiting);
         const waitSecs = waitingRiders.reduce((accum, rider) => (now - rider.arrivalTime) + accum, 0);
-        const wait = s.waiting ? ` (${l(Math.round(waitSecs))} secs)` : '';
-        const profit = s.payments - stats.costs.operating;
+        const wait = s.currentWaiting ? ` (${l(Math.round(waitSecs))} sec)` : '';
+        const profit = s.payments - s.costs;
         $('#score').html(l(Math.round(Math.max(0, profit / (p.millis() / 1000 / 60)))));
-        $('#waiting').html(`${l(s.waiting)}${wait}`);
-        const weight = s.riding ? ` (${l(s.ridingKg / 1000)} Mg)` : '';
-        $('#riding').html(`${l(s.riding)}${weight}`);
+        $('#waiting').html(`${l(s.totalWaitingTime)} total sec (${l(s.currentWaiting)} current${wait})`);
+        const weight = s.currentRiding ? ` (${l(s.currentRidingKg / 1000)} Mg)` : '';
+        $('#riding').html(`${l(s.riding)} total (${l(s.currentRiding)} current${weight})`);
         $('#served').html(l(s.served));
-        const curStyle = { style: 'currency', currency: 'usd' };
+        const curStyle = { style: 'currency', currency: 'USD' };
         $('#payments').html(s.payments.toLocaleString('en-us', curStyle));
-        $('#costs').html(stats.costs.operating.toLocaleString('en-us', curStyle));
+        $('#costs').html(s.costs.toLocaleString('en-us', curStyle));
         $('#profit').html((profit).toLocaleString('en-us', curStyle));
         const g = controls.paymentsChart;
         const yScale = g.height / stats.normalRideCost;
@@ -985,17 +1222,30 @@ class Stats {
             waiting: 0,
             served: 0,
             payments: 0,
+            totalRiding: 0,
+            totalWaiting: 0,
+            totalRidingKg: 0,
+            totalWaitingTime: 0,
+            lastUpdateTime: 0
         };
         this.costs = {
             perSec: 0.01,
             perSecPerCar: 0.01,
             perFloor: 0.1,
-            operating: 0
+            operating: 0,
+            totalOperating: 0
         };
         this.normalRideCost = 0.25;
         this.maxRecentRiderPayments = 150;
         this.recentRiderPayments = [];
         this.recentTripTimes = [];
+        this.riders.lastUpdateTime = Date.now() / 1000;
+    }
+    updateWaitingTime() {
+        const currentTime = Date.now() / 1000;
+        const deltaTime = currentTime - this.riders.lastUpdateTime;
+        this.riders.totalWaitingTime += deltaTime * this.riders.waiting;
+        this.riders.lastUpdateTime = currentTime;
     }
     chargeRider(p, tripTime) {
         const penaltyTime = p.constrain(tripTime - 30, 0, 300);
@@ -1009,11 +1259,50 @@ class Stats {
         this.riders.payments += rideCost;
     }
     addMovementCosts(numFloors, speed) {
-        this.costs.operating += this.costs.perFloor * (1 + speed / 10) * numFloors;
+        const cost = this.costs.perFloor * (1 + speed / 10) * numFloors;
+        this.costs.operating += cost;
+        this.costs.totalOperating += cost;
     }
     addIdleCosts(secs, numActiveCars) {
-        this.costs.operating += this.costs.perSec * secs;
-        this.costs.operating += this.costs.perSecPerCar * secs * numActiveCars;
+        const baseCost = this.costs.perSec * secs;
+        const carCost = this.costs.perSecPerCar * secs * numActiveCars;
+        this.costs.operating += baseCost + carCost;
+        this.costs.totalOperating += baseCost + carCost;
+        this.updateWaitingTime();
+    }
+    updateRiderStats(type, change, weight = 0) {
+        if (type === 'waiting') {
+            const newWaiting = Math.max(0, this.riders.waiting + change);
+            this.riders.waiting = newWaiting;
+            if (change > 0) {
+                this.riders.totalWaiting += change;
+            }
+        }
+        else if (type === 'riding') {
+            const oldRiding = this.riders.riding;
+            const newRiding = Math.max(0, oldRiding + change);
+            console.log(`Riding change: ${oldRiding} -> ${newRiding} (change: ${change}, weight: ${weight})`);
+            this.riders.riding = newRiding;
+            this.riders.ridingKg = Math.max(0, this.riders.ridingKg + weight);
+            if (change > 0) {
+                this.riders.totalRiding += change;
+                this.riders.totalRidingKg += Math.max(0, weight);
+            }
+        }
+    }
+    getStats() {
+        return {
+            riding: this.riders.totalRiding,
+            ridingKg: this.riders.totalRidingKg,
+            waiting: this.riders.totalWaiting,
+            served: this.riders.served,
+            payments: this.riders.payments,
+            costs: this.costs.totalOperating,
+            currentRiding: this.riders.riding,
+            currentWaiting: this.riders.waiting,
+            totalWaitingTime: Math.round(this.riders.totalWaitingTime),
+            currentRidingKg: this.riders.ridingKg
+        };
     }
 }
 class Talker {
@@ -1033,6 +1322,7 @@ class Talker {
             leaving: ['thank you, elevator', 'thanks', 'bye', 'so long', 'good times', 'far out', 'namaste'],
             tooLate: ['darn it!', 'stupid elevator', 'oh, i missed it', 'i ran as fast as i could', 'bummer'],
             carFull: ['that\'s a full car', 'a lot of people', 'too crowded', 'wow, full', 'full'],
+            wrongElevator: ['wrong elevator', 'this one can\'t go there', 'need different elevator', 'can\'t reach that floor', 'wrong car']
         };
         this.settings = settings;
         this.nextSpeechAllowedTime = new Date().getTime();

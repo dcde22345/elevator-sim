@@ -29,6 +29,7 @@ class Car {
     private doorOpStarted: number;
     private y: number;
 
+    private allowedFloors: number[];  // 20250522 Ella 新增：可停靠樓層列表
     constructor(p, settings, stats, carNumber) {
         this.p = p;
         this.settings = settings;
@@ -42,8 +43,8 @@ class Car {
         const carsGroupWidth = settings.numCars * gc.x + (settings.numCars - 1) * interCarSpacing;
         const leftRightMargin = settings.geom.canvas.x - carsGroupWidth;
         this.carLeftMargin = leftRightMargin / 2;
-        this.y = p.yFromFloor(1);
-        this.goingUp = true;
+        this.y = p.yFromFloor(2); //每部電梯的預設起始位置都是在 1 樓
+        this.goingUp = false;
         this.doorOpenFraction = 0;  // 0…1 = closed…open
         this.destFloors = [];
         this.riders = [];
@@ -51,6 +52,54 @@ class Car {
         this.sound = new MotorSound(this.pan);
         this.active = false;
         this.state = CarState.Idle;
+
+        this.allowedFloors = this.initAllowedFloors(carNumber);// 20250522 Ella 修改：初始化各電梯可停靠樓層
+    }
+    // 20250522 Ella 修改：初始化各電梯可停靠樓層
+    private initAllowedFloors(carNumber: number): number[] {
+        // B1樓層用-1表示
+        switch(carNumber) {
+            case 1: 
+                // 第一部電梯：停靠所有樓層（B1～12）
+                return [-1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+            case 2:
+                // 第二部電梯：僅停靠（B1、1、6、7、8、9、10、11、12）
+                return [-1, 1, 2, 7, 8, 9, 10, 11, 12, 13];
+            case 3:
+                // 第三部電梯：僅停靠（1、4、6、8、10、12）
+                return [1,2, 4, 6, 8, 10, 12, 13];
+            case 4:
+                // 第四部電梯：僅停靠（1、3、5、7、9、11）
+                return [1,2, 3, 5, 7, 9, 11, 13];
+            default:
+                return [1]; // 預設情況
+        }
+    }
+    
+    // 20250522 Ella 修改：檢查電梯是否可停靠指定樓層
+    public canStopAt(floor: number): boolean {
+        // 20250522 Ella 修改：加入額外的安全檢查
+        // 3號和4號電梯不能到B1樓
+        if (floor === -1 && (this.carNumber === 3 || this.carNumber === 4)) {
+            console.log(`警告：${this.carNumber}號電梯不能前往B1樓`);
+            return false;
+        }
+        
+        const canStop = this.allowedFloors.includes(floor);
+        if (!canStop) {
+            console.log(`警告：${this.carNumber}號電梯不能前往${floor === -1 ? 'B1' : floor}樓`);
+        }
+        return canStop;
+    }
+
+    // 20250522 Ella 修改：獲取可停靠樓層列表
+    public getAllowedFloors(): number[] {
+        return [...this.allowedFloors];
+    }
+
+    // 20250522 Ella 修改：獲取電梯編號
+    public getCarNumber(): number {
+        return this.carNumber;
     }
 
     draw() {
@@ -193,27 +242,62 @@ class Car {
 
     idle(p) {
         if (this.destFloors.length) {
-            let nextDest = this.destFloors.find(f =>
-                this.goingUp ? p.yFromFloor(f) > this.y : p.yFromFloor(f) < this.y);
+            const currentFloor = p.floorFromY(this.y);
+            
+            // 20250522 Ella 修改：智能方向判斷
+            // 檢查上下方向是否有目標樓層
+            const hasUpperFloors = this.destFloors.some(f => f > currentFloor && this.canStopAt(f));
+            const hasLowerFloors = this.destFloors.some(f => f < currentFloor && this.canStopAt(f));
+            
+            // 在1樓時的特殊處理：優先考慮實際目標方向
+            if (currentFloor === 1) {
+                if (hasUpperFloors && !hasLowerFloors) {
+                    this.goingUp = true;   // 只有上層請求時向上
+                } else if (hasLowerFloors && !hasUpperFloors) {
+                    this.goingUp = false;  // 只有下層請求時向下
+                } else if (hasUpperFloors && hasLowerFloors) {
+                    // 兩個方向都有請求時，保持當前方向或選擇較近的
+                    // 這裡可以保持當前方向，或者選擇距離較近的方向
+                }
+            }
+            
+            // 1. 先根據當前方向找尋目標樓層
+            let nextDest = this.destFloors.find(f => {
+                const floorY = p.yFromFloor(f);
+                // 確保目標樓層在允許範圍內
+                if (!this.canStopAt(f)) return false;
+                
+                if (this.goingUp) {
+                    return floorY > this.y;  // 向上時找更高樓層
+                } else {
+                    return floorY < this.y;  // 向下時找更低樓層
+                }
+            });
+
+            // 2. 如果當前方向沒有目標，則改變方向
             if (!nextDest) {
                 this.goingUp = !this.goingUp;
                 this.sortDestinations();
-                nextDest = this.destFloors[0];
+                // 取得新方向的第一個合法目標
+                nextDest = this.destFloors.find(f => this.canStopAt(f));
             }
-            this.stats.addMovementCosts(Math.abs(p.floorFromY(this.y) - nextDest), this.settings.elevSpeed);
-            this.state = CarState.Moving;
-            this.sound.osc.amp(p.map(this.settings.volume, 0, 10, 0, 0.6), 0.02);
-            console.log(`Car ${this.carNumber} moving to ${nextDest} of ${this.destFloors}`);
-            this.lastMoveTime = p.millis() / 1000;
-            this.speed = 0;
-            this.maxMaxSpeed = 1000;
-            this.maxSpeed = p.map(this.settings.elevSpeed, 1, 10, 20, this.maxMaxSpeed);
-            this.accel = this.maxSpeed * 2;
-            this.startY = this.y;
-            this.endY = p.yFromFloor(nextDest);
-            this.absTrip = Math.abs(this.startY - this.endY);
-            this.accelDistance = Math.min(this.absTrip / 2,
-                (this.maxSpeed * this.maxSpeed) / (2 * this.accel));
+
+            if (nextDest) {
+                this.stats.addMovementCosts(Math.abs(p.floorFromY(this.y) - nextDest), this.settings.elevSpeed);
+                this.state = CarState.Moving;
+                this.sound.osc.amp(p.map(this.settings.volume, 0, 10, 0, 0.6), 0.02);
+                console.log(`${this.carNumber}號電梯移動至 ${nextDest === -1 ? 'B1' : nextDest} 樓，方向：${this.goingUp ? '向上' : '向下'}`);
+                this.lastMoveTime = p.millis() / 1000;
+                this.speed = 0;
+                this.maxMaxSpeed = 1000;
+                this.maxSpeed = p.map(this.settings.elevSpeed, 1, 10, 20, this.maxMaxSpeed);
+                this.accel = this.maxSpeed * 2;
+                this.startY = this.y;
+                this.endY = p.yFromFloor(nextDest);
+                this.absTrip = Math.abs(this.startY - this.endY);
+                this.accelDistance = Math.min(this.absTrip / 2,
+                    (this.maxSpeed * this.maxSpeed) / (2 * this.accel));
+            }
         }
     }
 
@@ -241,8 +325,33 @@ class Car {
             this.doorOpStarted = this.nowSecs();
             this.state = CarState.Opening;
             this.removeCurrentFloorFromDest();
-            if (this.y === p.yFromFloor(1)) this.goingUp = true;
-            if (this.y === p.yFromFloor(this.settings.numFloors)) this.goingUp = false;
+            
+            // 20250522 Ella 修改：特殊樓層處理邏輯
+            const currentFloor = p.floorFromY(this.y);
+            
+            // 在一樓時，如果向下方向沒有請求，則改為向上
+            if (currentFloor === 1) {
+                const hasDownwardRequests = this.destFloors.some(f => 
+                    f < 1 && this.canStopAt(f)
+                );
+                if (!hasDownwardRequests) {
+                    this.goingUp = true;
+                    this.sortDestinations();
+                }
+            }
+            
+            // 在頂樓時強制向下
+            if (currentFloor === this.settings.numFloors) {
+                this.goingUp = false;
+                this.sortDestinations();
+            }
+            
+            // 在B1樓時強制向上
+            if (currentFloor === -1) {
+                this.goingUp = true;
+                this.sortDestinations();
+            }
+
             if (this.settings.volume > 0) {
                 p.dingSound.pan(this.pan);
                 p.dingSound.play();
@@ -275,6 +384,12 @@ class Car {
     }
 
     goTo(floor, manual=false) {
+        // 20250522 Ella 修改：檢查是否為允許停靠的樓層
+        if (!this.canStopAt(floor)) {
+            console.log(`警告：${this.carNumber}號電梯不能停靠 ${floor === -1 ? 'B1' : floor} 樓`);
+            return;
+        }
+
         if (manual || this.settings.controlMode === 0 /* Auto */) {
             if (!this.destFloors.find(f => f === floor)) {
                 this.destFloors.push(floor);
@@ -285,6 +400,18 @@ class Car {
     }
 
     sortDestinations() {
-        this.destFloors.sort((a, b) => this.goingUp ? a - b : b - a);
+        // 只排序可以停靠的樓層
+        const validDestinations = this.destFloors.filter(f => this.canStopAt(f));
+        
+        // 根據方向排序
+        validDestinations.sort((a, b) => {
+            if (this.goingUp) {
+                return a - b;  // 向上時按升序排列
+            } else {
+                return b - a;  // 向下時按降序排列
+            }
+        });
+        
+        this.destFloors = validDestinations;
     }
 }
