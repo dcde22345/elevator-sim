@@ -1,4 +1,4 @@
-enum CarState {Idle, Moving, Opening, Open, Closing}
+enum CarState {Idle, Moving, Opening, Open, Closing, DirectionChanging}
 
 class Car {
     private readonly p: any;
@@ -30,6 +30,7 @@ class Car {
     private y: number;
 
     private allowedFloors: number[];  // 20250522 Ella 新增：可停靠樓層列表
+    private needsDirectionChange: boolean;  // 20250522 Ella 新增：標記是否需要改變方向
     constructor(p, settings, stats, carNumber) {
         this.p = p;
         this.settings = settings;
@@ -52,6 +53,7 @@ class Car {
         this.sound = new MotorSound(this.pan);
         this.active = false;
         this.state = CarState.Idle;
+        this.needsDirectionChange = false;  // 20250522 Ella 新增：初始化方向改變標記
 
         this.allowedFloors = this.initAllowedFloors(carNumber);// 20250522 Ella 修改：初始化各電梯可停靠樓層
     }
@@ -230,6 +232,78 @@ class Car {
             case CarState.Closing:
                 this.doorOpenFraction = 1 - p.constrain((this.nowSecs() - this.doorOpStarted) / this.settings.doorMovementSecs, 0, 1);
                 if (this.doorOpenFraction === 0) {
+                    if (this.needsDirectionChange) {
+                        // 20250522 Ella 新增：關門後處理方向改變
+                        this.state = CarState.DirectionChanging;
+                    } else {
+                        this.state = CarState.Idle;
+                    }
+                }
+                break;
+            case CarState.DirectionChanging:
+                // 20250522 Ella 修改：方向已經改變，現在重新計算下一個目標並開始移動
+                this.needsDirectionChange = false;
+                
+                // 重新計算在新方向上的最近目標
+                let nextDest = null;
+                let bestDistance = Infinity;
+                const currentFloor = p.floorFromY(this.y);
+                
+                for (const floor of this.destFloors) {
+                    if (!this.canStopAt(floor)) continue;
+                    
+                    const floorY = p.yFromFloor(floor);
+                    const distance = Math.abs(this.y - floorY);
+                    
+                    if (this.goingUp) {
+                        // 向上時：找更高且最近的樓層
+                        if (floorY > this.y && distance < bestDistance) {
+                            nextDest = floor;
+                            bestDistance = distance;
+                        }
+                    } else {
+                        // 向下時：找更低且最近的樓層
+                        if (floorY < this.y && distance < bestDistance) {
+                            nextDest = floor;
+                            bestDistance = distance;
+                        }
+                    }
+                }
+                
+                // 如果沒有在新方向找到目標，找最近的任何目標
+                if (!nextDest && this.destFloors.length > 0) {
+                    bestDistance = Infinity;
+                    for (const floor of this.destFloors) {
+                        if (!this.canStopAt(floor)) continue;
+                        
+                        const floorY = p.yFromFloor(floor);
+                        const distance = Math.abs(this.y - floorY);
+                        
+                        if (distance < bestDistance) {
+                            nextDest = floor;
+                            bestDistance = distance;
+                        }
+                    }
+                }
+                
+                if (nextDest) {
+                    // 開始移動到目標樓層
+                    this.stats.addMovementCosts(Math.abs(currentFloor - nextDest), this.settings.elevSpeed);
+                    this.state = CarState.Moving;
+                    this.sound.osc.amp(p.map(this.settings.volume, 0, 10, 0, 0.6), 0.02);
+                    console.log(`${this.carNumber}號電梯開門關門完成，移動至 ${nextDest === -1 ? 'B1' : nextDest} 樓`);
+                    this.lastMoveTime = p.millis() / 1000;
+                    this.speed = 0;
+                    this.maxMaxSpeed = 1000;
+                    this.maxSpeed = p.map(this.settings.elevSpeed, 1, 10, 20, this.maxMaxSpeed);
+                    this.accel = this.maxSpeed * 2;
+                    this.startY = this.y;
+                    this.endY = p.yFromFloor(nextDest);
+                    this.absTrip = Math.abs(this.startY - this.endY);
+                    this.accelDistance = Math.min(this.absTrip / 2,
+                        (this.maxSpeed * this.maxSpeed) / (2 * this.accel));
+                } else {
+                    // 沒有目標，回到閒置狀態
                     this.state = CarState.Idle;
                 }
                 break;
@@ -262,24 +336,41 @@ class Car {
             }
             
             // 1. 先根據當前方向找尋目標樓層
-            let nextDest = this.destFloors.find(f => {
-                const floorY = p.yFromFloor(f);
-                // 確保目標樓層在允許範圍內
-                if (!this.canStopAt(f)) return false;
+            let nextDest = null;
+            let bestDistance = Infinity;
+            
+            // 在當前方向上找最近的目標樓層
+            for (const floor of this.destFloors) {
+                if (!this.canStopAt(floor)) continue;
+                
+                const floorY = p.yFromFloor(floor);
+                const distance = Math.abs(this.y - floorY);
                 
                 if (this.goingUp) {
-                    return floorY > this.y;  // 向上時找更高樓層
+                    // 向上時：找更高且最近的樓層
+                    if (floorY > this.y && distance < bestDistance) {
+                        nextDest = floor;
+                        bestDistance = distance;
+                    }
                 } else {
-                    return floorY < this.y;  // 向下時找更低樓層
+                    // 向下時：找更低且最近的樓層
+                    if (floorY < this.y && distance < bestDistance) {
+                        nextDest = floor;
+                        bestDistance = distance;
+                    }
                 }
-            });
+            }
 
-            // 2. 如果當前方向沒有目標，則改變方向
+            // 2. 如果當前方向沒有目標，則改變方向並準備開門關門
             if (!nextDest) {
+                // 20250522 Ella 修改：先改變方向，然後開門關門再移動
                 this.goingUp = !this.goingUp;
                 this.sortDestinations();
-                // 取得新方向的第一個合法目標
-                nextDest = this.destFloors.find(f => this.canStopAt(f));
+                this.needsDirectionChange = true;
+                this.state = CarState.Opening;
+                this.doorOpStarted = this.nowSecs();
+                console.log(`${this.carNumber}號電梯改變方向：${this.goingUp ? '向上' : '向下'}，先開門關門再移動`);
+                return; // 結束此次處理，等待門開關完成後再移動
             }
 
             if (nextDest) {

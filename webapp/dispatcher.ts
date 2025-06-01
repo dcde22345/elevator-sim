@@ -1,3 +1,9 @@
+/** 電梯請求類型 */
+enum RequestType {
+    PickupPassenger = 'pickup',    // 接乘客請求
+    DeliverPassenger = 'deliver'   // 送乘客請求
+}
+
 /** Manages riders, and calls elevators for them. */
 class Dispatcher {
     private readonly p: any;
@@ -106,7 +112,7 @@ class Dispatcher {
     }
 
     // 20250522 Ella 修改：處理乘客請求
-    requestCar(startFloor: number, goingUp: boolean, destFloor?: number) {
+    requestCar(startFloor: number, goingUp: boolean, destFloor?: number, requestType: RequestType = RequestType.PickupPassenger) {
         // 找出可以同時服務起始樓層和目標樓層的電梯
         const eligibleCars = this.activeCars().filter(car => {
             const canStopAtStart = car.canStopAt(startFloor);
@@ -127,16 +133,18 @@ class Dispatcher {
 
         // 檢查是否已有相同的請求
         if (!this.carCallQueue.find(request => 
-            request.floor === startFloor && request.goingUp === goingUp)) {
+            request.floor === startFloor && request.goingUp === goingUp && request.requestType === requestType)) {
             
             this.carCallQueue.push({
                 floor: startFloor,
                 goingUp: goingUp,
                 destFloor: destFloor, // 新增目標樓層資訊
-                requestTime: Date.now()
+                requestTime: Date.now(),
+                requestType: requestType  // 新增請求類型
             });
 
-            console.log(`新增電梯請求：${this.floorNumberToString(startFloor)} 樓${
+            const typeMsg = requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
+            console.log(`新增${typeMsg}請求：${this.floorNumberToString(startFloor)} 樓${
                 destFloor !== undefined ? ` 到 ${this.floorNumberToString(destFloor)} 樓` : ''
             }，方向：${goingUp ? '向上' : '向下'}`);
             console.log(`可用電梯：${eligibleCars.map(car => car.getCarNumber()).join(', ')}號`);
@@ -144,14 +152,19 @@ class Dispatcher {
     }
 
     // 20250522 Ella 新增：為特定乘客請求電梯，繞過重複檢查
-    requestCarForSpecificRider(startFloor: number, goingUp: boolean, destFloor: number, rider: any) {
-        // 找出可以同時服務起始樓層和目標樓層的電梯
+    requestCarForSpecificRider(startFloor: number, goingUp: boolean, destFloor: number, rider: any, excludeCar?: any, requestType: RequestType = RequestType.PickupPassenger) {
+        // 找出可以同時服務起始樓層和目標樓層的電梯，排除無法服務的電梯
         const eligibleCars = this.activeCars().filter(car => {
+            // 排除指定的電梯
+            if (excludeCar && car === excludeCar) {
+                return false;
+            }
             return car.canStopAt(startFloor) && car.canStopAt(destFloor);
         });
 
         if (eligibleCars.length === 0) {
-            console.log(`警告：沒有電梯可以從 ${this.floorNumberToString(startFloor)} 樓到達 ${this.floorNumberToString(destFloor)} 樓`);
+            const excludeMsg = excludeCar ? `（已排除 ${excludeCar.getCarNumber()} 號電梯）` : '';
+            console.log(`警告：沒有電梯可以從 ${this.floorNumberToString(startFloor)} 樓到達 ${this.floorNumberToString(destFloor)} 樓${excludeMsg}`);
             return;
         }
 
@@ -161,10 +174,14 @@ class Dispatcher {
             goingUp: goingUp,
             destFloor: destFloor,
             requestTime: Date.now(),
-            specificRider: rider  // 標記特定乘客
+            specificRider: rider,  // 標記特定乘客
+            excludeCar: excludeCar,  // 記錄要排除的電梯
+            requestType: requestType  // 新增請求類型
         });
 
-        console.log(`為特定乘客重新請求電梯：${this.floorNumberToString(startFloor)} 樓到 ${this.floorNumberToString(destFloor)} 樓`);
+        const typeMsg = requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
+        const excludeMsg = excludeCar ? `（排除 ${excludeCar.getCarNumber()} 號電梯）` : '';
+        console.log(`為特定乘客重新${typeMsg}請求：${this.floorNumberToString(startFloor)} 樓到 ${this.floorNumberToString(destFloor)} 樓${excludeMsg}`);
         console.log(`可用電梯：${eligibleCars.map(car => car.getCarNumber()).join(', ')}號`);
     }
 
@@ -175,10 +192,20 @@ class Dispatcher {
         if (this.settings.controlMode === 0 /* Auto */) {
             const request = this.carCallQueue.shift();
             if (request) {
+                // 優先嘗試動態分配給移動中的電梯
+                if (this.assignRequestToMovingElevators(request)) {
+                    return; // 成功分配給移動中的電梯，處理完成
+                }
+                
                 const floorY = this.p.yFromFloor(request.floor);
                 
                 // 20250522 Ella 修改：找出可以同時停靠起始和目標樓層的電梯
                 const eligibleCars = this.activeCars().filter(car => {
+                    // 如果有要排除的電梯，先排除
+                    if (request.excludeCar && car === request.excludeCar) {
+                        return false;
+                    }
+                    
                     const canStopAtStart = car.canStopAt(request.floor);
                     // 如果有目標樓層，也要檢查是否可停靠
                     if (request.destFloor !== undefined) {
@@ -228,20 +255,34 @@ class Dispatcher {
                 score += 20;  // 移動中電梯加20分
             }
             
-            // 3. 方向相符性評分
+            // 3. 方向相符性評分（改進版）
             if (car.state === CarState.Idle || car.state === CarState.Moving) {
                 const requestDirection = request.goingUp;
                 const elevatorDirection = car.goingUp;
                 
                 if (requestDirection === elevatorDirection) {
                     score += 30;  // 方向相同加30分
-                }
-                
-                // 4. 行徑路線評分（電梯是否會經過請求樓層）
-                if (car.state === CarState.Moving) {
-                    const isOnRoute = this.isElevatorOnRoute(car, request.floor, currentFloor);
-                    if (isOnRoute) {
-                        score += 40;  // 在行徑路線上加40分
+                    
+                    // 4. 行徑路線評分（電梯是否會經過請求樓層）
+                    if (car.state === CarState.Moving) {
+                        const isOnRoute = this.isElevatorOnRoute(car, request.floor, currentFloor);
+                        if (isOnRoute) {
+                            score += 40;  // 在行徑路線上加40分
+                        }
+                    }
+                } else {
+                    // 方向不同時，檢查電梯是否即將改變方向
+                    const hasRequestsInCurrentDirection = car.destFloors.some(f => {
+                        if (elevatorDirection) {
+                            return f > currentFloor && car.canStopAt(f);  // 向上方向有請求
+                        } else {
+                            return f < currentFloor && car.canStopAt(f);  // 向下方向有請求
+                        }
+                    });
+                    
+                    // 如果電梯在當前方向沒有更多請求，即將改變方向
+                    if (!hasRequestsInCurrentDirection) {
+                        score += 15;  // 即將改變方向加15分
                     }
                 }
             }
@@ -288,8 +329,23 @@ class Dispatcher {
 
     // 20250522 Ella 修改：新增輔助方法
     private assignElevator(car: Car, request: any) {
-        car.goTo(request.floor);
-        console.log(`分配 ${car.getCarNumber()} 號電梯到 ${this.floorNumberToString(request.floor)} 樓`);
+        const typeMsg = request.requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
+        
+        if (request.requestType === RequestType.PickupPassenger) {
+            // 接乘客請求：電梯去指定樓層接乘客
+            car.goTo(request.floor);
+            console.log(`分配 ${car.getCarNumber()} 號電梯去 ${this.floorNumberToString(request.floor)} 樓接乘客`);
+        } else if (request.requestType === RequestType.DeliverPassenger) {
+            // 送乘客請求：電梯去目標樓層送乘客
+            if (request.destFloor !== undefined) {
+                car.goTo(request.destFloor);
+                console.log(`分配 ${car.getCarNumber()} 號電梯送乘客到 ${this.floorNumberToString(request.destFloor)} 樓`);
+            } else {
+                console.log(`警告：送乘客請求缺少目標樓層資訊`);
+                return;
+            }
+        }
+        
         console.log(`等待時間：${((Date.now() - request.requestTime) / 1000).toFixed(1)} 秒`);
     }
 
@@ -464,5 +520,61 @@ class Dispatcher {
         // 如果還是沒選到，隨機選擇一個可達樓層
         const accessibleFloorsArray = Array.from(accessibleFloors) as number[];
         return accessibleFloorsArray[Math.floor(p.random(accessibleFloorsArray.length))];
+    }
+
+    // 20250522 Ella 新增：專用送乘客請求方法
+    requestDelivery(car: any, destFloor: number, rider: any) {
+        // 檢查電梯是否能到達目標樓層
+        if (!car.canStopAt(destFloor)) {
+            console.log(`警告：${car.getCarNumber()} 號電梯無法送乘客到 ${this.floorNumberToString(destFloor)} 樓`);
+            return;
+        }
+
+        // 直接在電梯內處理送乘客請求
+        car.goTo(destFloor);
+        console.log(`${car.getCarNumber()} 號電梯接收送乘客請求：前往 ${this.floorNumberToString(destFloor)} 樓`);
+    }
+
+    // 20250522 Ella 新增：動態請求分配 - 讓移動中的電梯接收同方向請求
+    private assignRequestToMovingElevators(request: any): boolean {
+        const requestFloorY = this.p.yFromFloor(request.floor);
+        
+        // 找出正在移動且方向符合的電梯
+        const suitableMovingCars = this.activeCars().filter(car => {
+            if (car.state !== CarState.Moving) return false;
+            if (!car.canStopAt(request.floor)) return false;
+            if (request.destFloor !== undefined && !car.canStopAt(request.destFloor)) return false;
+            
+            // 檢查電梯方向是否與請求方向相符
+            if (car.goingUp !== request.goingUp) return false;
+            
+            // 檢查電梯是否會經過請求樓層
+            if (request.goingUp) {
+                // 向上請求：電梯目前位置要在請求樓層下方
+                return car.y < requestFloorY;
+            } else {
+                // 向下請求：電梯目前位置要在請求樓層上方
+                return car.y > requestFloorY;
+            }
+        });
+        
+        if (suitableMovingCars.length === 0) {
+            return false; // 沒有合適的移動中電梯
+        }
+        
+        // 選擇距離請求樓層最近的電梯
+        const closestCar = suitableMovingCars.reduce((closest, current) => {
+            const closestDistance = Math.abs(closest.y - requestFloorY);
+            const currentDistance = Math.abs(current.y - requestFloorY);
+            return currentDistance < closestDistance ? current : closest;
+        });
+        
+        // 將請求樓層加入該電梯的目標列表
+        closestCar.goTo(request.floor);
+        
+        const typeMsg = request.requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
+        console.log(`動態分配：${closestCar.getCarNumber()} 號電梯（移動中）接收${typeMsg}請求 - ${this.floorNumberToString(request.floor)} 樓`);
+        
+        return true; // 成功分配給移動中的電梯
     }
 }

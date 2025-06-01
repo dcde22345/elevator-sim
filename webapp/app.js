@@ -45,6 +45,7 @@ var CarState;
     CarState[CarState["Opening"] = 2] = "Opening";
     CarState[CarState["Open"] = 3] = "Open";
     CarState[CarState["Closing"] = 4] = "Closing";
+    CarState[CarState["DirectionChanging"] = 5] = "DirectionChanging";
 })(CarState || (CarState = {}));
 class Car {
     constructor(p, settings, stats, carNumber) {
@@ -68,6 +69,7 @@ class Car {
         this.sound = new MotorSound(this.pan);
         this.active = false;
         this.state = CarState.Idle;
+        this.needsDirectionChange = false; // 20250522 Ella 新增：初始化方向改變標記
         this.allowedFloors = this.initAllowedFloors(carNumber); // 20250522 Ella 修改：初始化各電梯可停靠樓層
     }
     // 20250522 Ella 修改：初始化各電梯可停靠樓層
@@ -229,6 +231,74 @@ class Car {
             case CarState.Closing:
                 this.doorOpenFraction = 1 - p.constrain((this.nowSecs() - this.doorOpStarted) / this.settings.doorMovementSecs, 0, 1);
                 if (this.doorOpenFraction === 0) {
+                    if (this.needsDirectionChange) {
+                        // 20250522 Ella 新增：關門後處理方向改變
+                        this.state = CarState.DirectionChanging;
+                    }
+                    else {
+                        this.state = CarState.Idle;
+                    }
+                }
+                break;
+            case CarState.DirectionChanging:
+                // 20250522 Ella 修改：方向已經改變，現在重新計算下一個目標並開始移動
+                this.needsDirectionChange = false;
+                // 重新計算在新方向上的最近目標
+                let nextDest = null;
+                let bestDistance = Infinity;
+                const currentFloor = p.floorFromY(this.y);
+                for (const floor of this.destFloors) {
+                    if (!this.canStopAt(floor))
+                        continue;
+                    const floorY = p.yFromFloor(floor);
+                    const distance = Math.abs(this.y - floorY);
+                    if (this.goingUp) {
+                        // 向上時：找更高且最近的樓層
+                        if (floorY > this.y && distance < bestDistance) {
+                            nextDest = floor;
+                            bestDistance = distance;
+                        }
+                    }
+                    else {
+                        // 向下時：找更低且最近的樓層
+                        if (floorY < this.y && distance < bestDistance) {
+                            nextDest = floor;
+                            bestDistance = distance;
+                        }
+                    }
+                }
+                // 如果沒有在新方向找到目標，找最近的任何目標
+                if (!nextDest && this.destFloors.length > 0) {
+                    bestDistance = Infinity;
+                    for (const floor of this.destFloors) {
+                        if (!this.canStopAt(floor))
+                            continue;
+                        const floorY = p.yFromFloor(floor);
+                        const distance = Math.abs(this.y - floorY);
+                        if (distance < bestDistance) {
+                            nextDest = floor;
+                            bestDistance = distance;
+                        }
+                    }
+                }
+                if (nextDest) {
+                    // 開始移動到目標樓層
+                    this.stats.addMovementCosts(Math.abs(currentFloor - nextDest), this.settings.elevSpeed);
+                    this.state = CarState.Moving;
+                    this.sound.osc.amp(p.map(this.settings.volume, 0, 10, 0, 0.6), 0.02);
+                    console.log(`${this.carNumber}號電梯開門關門完成，移動至 ${nextDest === -1 ? 'B1' : nextDest} 樓`);
+                    this.lastMoveTime = p.millis() / 1000;
+                    this.speed = 0;
+                    this.maxMaxSpeed = 1000;
+                    this.maxSpeed = p.map(this.settings.elevSpeed, 1, 10, 20, this.maxMaxSpeed);
+                    this.accel = this.maxSpeed * 2;
+                    this.startY = this.y;
+                    this.endY = p.yFromFloor(nextDest);
+                    this.absTrip = Math.abs(this.startY - this.endY);
+                    this.accelDistance = Math.min(this.absTrip / 2, (this.maxSpeed * this.maxSpeed) / (2 * this.accel));
+                }
+                else {
+                    // 沒有目標，回到閒置狀態
                     this.state = CarState.Idle;
                 }
                 break;
@@ -258,24 +328,39 @@ class Car {
                 }
             }
             // 1. 先根據當前方向找尋目標樓層
-            let nextDest = this.destFloors.find(f => {
-                const floorY = p.yFromFloor(f);
-                // 確保目標樓層在允許範圍內
-                if (!this.canStopAt(f))
-                    return false;
+            let nextDest = null;
+            let bestDistance = Infinity;
+            // 在當前方向上找最近的目標樓層
+            for (const floor of this.destFloors) {
+                if (!this.canStopAt(floor))
+                    continue;
+                const floorY = p.yFromFloor(floor);
+                const distance = Math.abs(this.y - floorY);
                 if (this.goingUp) {
-                    return floorY > this.y; // 向上時找更高樓層
+                    // 向上時：找更高且最近的樓層
+                    if (floorY > this.y && distance < bestDistance) {
+                        nextDest = floor;
+                        bestDistance = distance;
+                    }
                 }
                 else {
-                    return floorY < this.y; // 向下時找更低樓層
+                    // 向下時：找更低且最近的樓層
+                    if (floorY < this.y && distance < bestDistance) {
+                        nextDest = floor;
+                        bestDistance = distance;
+                    }
                 }
-            });
-            // 2. 如果當前方向沒有目標，則改變方向
+            }
+            // 2. 如果當前方向沒有目標，則改變方向並準備開門關門
             if (!nextDest) {
+                // 20250522 Ella 修改：先改變方向，然後開門關門再移動
                 this.goingUp = !this.goingUp;
                 this.sortDestinations();
-                // 取得新方向的第一個合法目標
-                nextDest = this.destFloors.find(f => this.canStopAt(f));
+                this.needsDirectionChange = true;
+                this.state = CarState.Opening;
+                this.doorOpStarted = this.nowSecs();
+                console.log(`${this.carNumber}號電梯改變方向：${this.goingUp ? '向上' : '向下'}，先開門關門再移動`);
+                return; // 結束此次處理，等待門開關完成後再移動
             }
             if (nextDest) {
                 this.stats.addMovementCosts(Math.abs(p.floorFromY(this.y) - nextDest), this.settings.elevSpeed);
@@ -442,6 +527,12 @@ class Controls {
         speakers.changed(() => settings.speakersType = speakers.elt.selectedIndex);
     }
 }
+/** 電梯請求類型 */
+var RequestType;
+(function (RequestType) {
+    RequestType["PickupPassenger"] = "pickup";
+    RequestType["DeliverPassenger"] = "deliver"; // 送乘客請求
+})(RequestType || (RequestType = {}));
 /** Manages riders, and calls elevators for them. */
 class Dispatcher {
     constructor(p, settings, cars, stats, talker) {
@@ -525,7 +616,7 @@ class Dispatcher {
         return this.floorFlow;
     }
     // 20250522 Ella 修改：處理乘客請求
-    requestCar(startFloor, goingUp, destFloor) {
+    requestCar(startFloor, goingUp, destFloor, requestType = RequestType.PickupPassenger) {
         // 找出可以同時服務起始樓層和目標樓層的電梯
         const eligibleCars = this.activeCars().filter(car => {
             const canStopAtStart = car.canStopAt(startFloor);
@@ -543,25 +634,32 @@ class Dispatcher {
             return;
         }
         // 檢查是否已有相同的請求
-        if (!this.carCallQueue.find(request => request.floor === startFloor && request.goingUp === goingUp)) {
+        if (!this.carCallQueue.find(request => request.floor === startFloor && request.goingUp === goingUp && request.requestType === requestType)) {
             this.carCallQueue.push({
                 floor: startFloor,
                 goingUp: goingUp,
                 destFloor: destFloor, // 新增目標樓層資訊
-                requestTime: Date.now()
+                requestTime: Date.now(),
+                requestType: requestType // 新增請求類型
             });
-            console.log(`新增電梯請求：${this.floorNumberToString(startFloor)} 樓${destFloor !== undefined ? ` 到 ${this.floorNumberToString(destFloor)} 樓` : ''}，方向：${goingUp ? '向上' : '向下'}`);
+            const typeMsg = requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
+            console.log(`新增${typeMsg}請求：${this.floorNumberToString(startFloor)} 樓${destFloor !== undefined ? ` 到 ${this.floorNumberToString(destFloor)} 樓` : ''}，方向：${goingUp ? '向上' : '向下'}`);
             console.log(`可用電梯：${eligibleCars.map(car => car.getCarNumber()).join(', ')}號`);
         }
     }
     // 20250522 Ella 新增：為特定乘客請求電梯，繞過重複檢查
-    requestCarForSpecificRider(startFloor, goingUp, destFloor, rider) {
-        // 找出可以同時服務起始樓層和目標樓層的電梯
+    requestCarForSpecificRider(startFloor, goingUp, destFloor, rider, excludeCar, requestType = RequestType.PickupPassenger) {
+        // 找出可以同時服務起始樓層和目標樓層的電梯，排除無法服務的電梯
         const eligibleCars = this.activeCars().filter(car => {
+            // 排除指定的電梯
+            if (excludeCar && car === excludeCar) {
+                return false;
+            }
             return car.canStopAt(startFloor) && car.canStopAt(destFloor);
         });
         if (eligibleCars.length === 0) {
-            console.log(`警告：沒有電梯可以從 ${this.floorNumberToString(startFloor)} 樓到達 ${this.floorNumberToString(destFloor)} 樓`);
+            const excludeMsg = excludeCar ? `（已排除 ${excludeCar.getCarNumber()} 號電梯）` : '';
+            console.log(`警告：沒有電梯可以從 ${this.floorNumberToString(startFloor)} 樓到達 ${this.floorNumberToString(destFloor)} 樓${excludeMsg}`);
             return;
         }
         // 強制添加請求，不檢查重複
@@ -570,9 +668,13 @@ class Dispatcher {
             goingUp: goingUp,
             destFloor: destFloor,
             requestTime: Date.now(),
-            specificRider: rider // 標記特定乘客
+            specificRider: rider, // 標記特定乘客
+            excludeCar: excludeCar, // 記錄要排除的電梯
+            requestType: requestType // 新增請求類型
         });
-        console.log(`為特定乘客重新請求電梯：${this.floorNumberToString(startFloor)} 樓到 ${this.floorNumberToString(destFloor)} 樓`);
+        const typeMsg = requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
+        const excludeMsg = excludeCar ? `（排除 ${excludeCar.getCarNumber()} 號電梯）` : '';
+        console.log(`為特定乘客重新${typeMsg}請求：${this.floorNumberToString(startFloor)} 樓到 ${this.floorNumberToString(destFloor)} 樓${excludeMsg}`);
         console.log(`可用電梯：${eligibleCars.map(car => car.getCarNumber()).join(', ')}號`);
     }
     // 20250522 Ella 修改：主要處理邏輯
@@ -581,9 +683,17 @@ class Dispatcher {
         if (this.settings.controlMode === 0 /* Auto */) {
             const request = this.carCallQueue.shift();
             if (request) {
+                // 優先嘗試動態分配給移動中的電梯
+                if (this.assignRequestToMovingElevators(request)) {
+                    return; // 成功分配給移動中的電梯，處理完成
+                }
                 const floorY = this.p.yFromFloor(request.floor);
                 // 20250522 Ella 修改：找出可以同時停靠起始和目標樓層的電梯
                 const eligibleCars = this.activeCars().filter(car => {
+                    // 如果有要排除的電梯，先排除
+                    if (request.excludeCar && car === request.excludeCar) {
+                        return false;
+                    }
                     const canStopAtStart = car.canStopAt(request.floor);
                     // 如果有目標樓層，也要檢查是否可停靠
                     if (request.destFloor !== undefined) {
@@ -628,18 +738,33 @@ class Dispatcher {
             else if (car.state === CarState.Moving) {
                 score += 20; // 移動中電梯加20分
             }
-            // 3. 方向相符性評分
+            // 3. 方向相符性評分（改進版）
             if (car.state === CarState.Idle || car.state === CarState.Moving) {
                 const requestDirection = request.goingUp;
                 const elevatorDirection = car.goingUp;
                 if (requestDirection === elevatorDirection) {
                     score += 30; // 方向相同加30分
+                    // 4. 行徑路線評分（電梯是否會經過請求樓層）
+                    if (car.state === CarState.Moving) {
+                        const isOnRoute = this.isElevatorOnRoute(car, request.floor, currentFloor);
+                        if (isOnRoute) {
+                            score += 40; // 在行徑路線上加40分
+                        }
+                    }
                 }
-                // 4. 行徑路線評分（電梯是否會經過請求樓層）
-                if (car.state === CarState.Moving) {
-                    const isOnRoute = this.isElevatorOnRoute(car, request.floor, currentFloor);
-                    if (isOnRoute) {
-                        score += 40; // 在行徑路線上加40分
+                else {
+                    // 方向不同時，檢查電梯是否即將改變方向
+                    const hasRequestsInCurrentDirection = car.destFloors.some(f => {
+                        if (elevatorDirection) {
+                            return f > currentFloor && car.canStopAt(f); // 向上方向有請求
+                        }
+                        else {
+                            return f < currentFloor && car.canStopAt(f); // 向下方向有請求
+                        }
+                    });
+                    // 如果電梯在當前方向沒有更多請求，即將改變方向
+                    if (!hasRequestsInCurrentDirection) {
+                        score += 15; // 即將改變方向加15分
                     }
                 }
             }
@@ -679,8 +804,23 @@ class Dispatcher {
     }
     // 20250522 Ella 修改：新增輔助方法
     assignElevator(car, request) {
-        car.goTo(request.floor);
-        console.log(`分配 ${car.getCarNumber()} 號電梯到 ${this.floorNumberToString(request.floor)} 樓`);
+        const typeMsg = request.requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
+        if (request.requestType === RequestType.PickupPassenger) {
+            // 接乘客請求：電梯去指定樓層接乘客
+            car.goTo(request.floor);
+            console.log(`分配 ${car.getCarNumber()} 號電梯去 ${this.floorNumberToString(request.floor)} 樓接乘客`);
+        }
+        else if (request.requestType === RequestType.DeliverPassenger) {
+            // 送乘客請求：電梯去目標樓層送乘客
+            if (request.destFloor !== undefined) {
+                car.goTo(request.destFloor);
+                console.log(`分配 ${car.getCarNumber()} 號電梯送乘客到 ${this.floorNumberToString(request.destFloor)} 樓`);
+            }
+            else {
+                console.log(`警告：送乘客請求缺少目標樓層資訊`);
+                return;
+            }
+        }
         console.log(`等待時間：${((Date.now() - request.requestTime) / 1000).toFixed(1)} 秒`);
     }
     // 20250522 Ella 修改：樓層號碼轉換為顯示文字
@@ -830,6 +970,56 @@ class Dispatcher {
         const accessibleFloorsArray = Array.from(accessibleFloors);
         return accessibleFloorsArray[Math.floor(p.random(accessibleFloorsArray.length))];
     }
+    // 20250522 Ella 新增：專用送乘客請求方法
+    requestDelivery(car, destFloor, rider) {
+        // 檢查電梯是否能到達目標樓層
+        if (!car.canStopAt(destFloor)) {
+            console.log(`警告：${car.getCarNumber()} 號電梯無法送乘客到 ${this.floorNumberToString(destFloor)} 樓`);
+            return;
+        }
+        // 直接在電梯內處理送乘客請求
+        car.goTo(destFloor);
+        console.log(`${car.getCarNumber()} 號電梯接收送乘客請求：前往 ${this.floorNumberToString(destFloor)} 樓`);
+    }
+    // 20250522 Ella 新增：動態請求分配 - 讓移動中的電梯接收同方向請求
+    assignRequestToMovingElevators(request) {
+        const requestFloorY = this.p.yFromFloor(request.floor);
+        // 找出正在移動且方向符合的電梯
+        const suitableMovingCars = this.activeCars().filter(car => {
+            if (car.state !== CarState.Moving)
+                return false;
+            if (!car.canStopAt(request.floor))
+                return false;
+            if (request.destFloor !== undefined && !car.canStopAt(request.destFloor))
+                return false;
+            // 檢查電梯方向是否與請求方向相符
+            if (car.goingUp !== request.goingUp)
+                return false;
+            // 檢查電梯是否會經過請求樓層
+            if (request.goingUp) {
+                // 向上請求：電梯目前位置要在請求樓層下方
+                return car.y < requestFloorY;
+            }
+            else {
+                // 向下請求：電梯目前位置要在請求樓層上方
+                return car.y > requestFloorY;
+            }
+        });
+        if (suitableMovingCars.length === 0) {
+            return false; // 沒有合適的移動中電梯
+        }
+        // 選擇距離請求樓層最近的電梯
+        const closestCar = suitableMovingCars.reduce((closest, current) => {
+            const closestDistance = Math.abs(closest.y - requestFloorY);
+            const currentDistance = Math.abs(current.y - requestFloorY);
+            return currentDistance < closestDistance ? current : closest;
+        });
+        // 將請求樓層加入該電梯的目標列表
+        closestCar.goTo(request.floor);
+        const typeMsg = request.requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
+        console.log(`動態分配：${closestCar.getCarNumber()} 號電梯（移動中）接收${typeMsg}請求 - ${this.floorNumberToString(request.floor)} 樓`);
+        return true; // 成功分配給移動中的電梯
+    }
 }
 /** Manages an elevator rider */
 var RiderState;
@@ -940,16 +1130,16 @@ class Rider {
             if (suitableCar.canStopAt(this.destFloor)) {
                 this.carIn = suitableCar;
                 this.carIn.addRider(this);
-                this.carIn.goTo(this.destFloor);
+                this.dispatcher.requestDelivery(this.carIn, this.destFloor, this);
                 this.setBoardingPath(suitableCar);
                 this.millisAtLastMove = this.p.millis();
                 this.state = RiderState.Boarding;
             }
             else {
                 // 電梯無法到達目的樓層
-                // 使用新的方法重新請求電梯
+                // 使用新的方法重新請求電梯，排除目前無法服務的電梯
                 if (this.dispatcher.requestCarForSpecificRider) {
-                    this.dispatcher.requestCarForSpecificRider(this.startFloor, goingUp, this.destFloor, this);
+                    this.dispatcher.requestCarForSpecificRider(this.startFloor, goingUp, this.destFloor, this, suitableCar);
                 }
                 else {
                     // 備用方案：延遲後重新請求

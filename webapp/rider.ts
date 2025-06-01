@@ -129,15 +129,15 @@ class Rider {
             if (suitableCar.canStopAt(this.destFloor)) {
                 this.carIn = suitableCar;
                 this.carIn.addRider(this);
-                this.carIn.goTo(this.destFloor);
+                this.dispatcher.requestDelivery(this.carIn, this.destFloor, this);
                 this.setBoardingPath(suitableCar);
                 this.millisAtLastMove = this.p.millis();
                 this.state = RiderState.Boarding;
             } else {
                 // 電梯無法到達目的樓層
-                // 使用新的方法重新請求電梯
+                // 使用新的方法重新請求電梯，排除目前無法服務的電梯
                 if (this.dispatcher.requestCarForSpecificRider) {
-                    this.dispatcher.requestCarForSpecificRider(this.startFloor, goingUp, this.destFloor, this);
+                    this.dispatcher.requestCarForSpecificRider(this.startFloor, goingUp, this.destFloor, this, suitableCar);
                 } else {
                     // 備用方案：延遲後重新請求
                     setTimeout(() => {
