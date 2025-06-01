@@ -582,49 +582,99 @@ class Dispatcher {
             const request = this.carCallQueue.shift();
             if (request) {
                 const floorY = this.p.yFromFloor(request.floor);
-                // 20250522 Ella 修改：只考慮可以停靠該樓層的電梯
-                const eligibleCars = this.activeCars().filter(car => car.canStopAt(request.floor));
-                // 在符合條件的電梯中找最近的閒置電梯
-                const idleCars = eligibleCars.filter(car => car.state === CarState.Idle && car.goingUp === request.goingUp);
-                // 計算距離的輔助函數
-                const dist = car => Math.abs(car.y - floorY);
-                // 20250522 Ella 修改：當距離相同時隨機選擇電梯
-                const closest = cars => {
-                    if (cars.length === 0)
-                        return undefined;
-                    if (cars.length === 1)
-                        return cars[0];
-                    // 找出最小距離
-                    const minDistance = Math.min(...cars.map(car => dist(car)));
-                    // 找出所有距離最小的電梯
-                    const closestCars = cars.filter(car => dist(car) === minDistance);
-                    // 如果只有一台電梯距離最近，直接返回
-                    if (closestCars.length === 1) {
-                        return closestCars[0];
+                // 20250522 Ella 修改：找出可以同時停靠起始和目標樓層的電梯
+                const eligibleCars = this.activeCars().filter(car => {
+                    const canStopAtStart = car.canStopAt(request.floor);
+                    // 如果有目標樓層，也要檢查是否可停靠
+                    if (request.destFloor !== undefined) {
+                        return canStopAtStart && car.canStopAt(request.destFloor);
                     }
-                    // 如果有多台電梯距離相同，隨機選擇一台
-                    const randomIndex = Math.floor(Math.random() * closestCars.length);
-                    console.log(`距離相同的電梯：${closestCars.map(car => car.getCarNumber()).join(', ')}號，隨機選擇：${closestCars[randomIndex].getCarNumber()}號`);
-                    return closestCars[randomIndex];
-                };
-                // 尋找最近的閒置電梯
-                const closestIdleCar = closest(idleCars);
-                if (closestIdleCar) {
-                    this.assignElevator(closestIdleCar, request);
+                    return canStopAtStart;
+                });
+                if (eligibleCars.length === 0) {
+                    // 沒有合適的電梯，請求重新入隊
+                    this.carCallQueue.push(request);
+                    console.log(`請求重新入隊：${this.floorNumberToString(request.floor)} 樓，因為沒有可用電梯`);
+                    return;
+                }
+                // 20250522 Ella 新增：智能電梯選擇邏輯
+                const bestCar = this.selectBestElevator(eligibleCars, request);
+                if (bestCar) {
+                    this.assignElevator(bestCar, request);
                 }
                 else {
-                    // 如果沒有閒置電梯，找最近的可用電梯
-                    const closestEligibleCar = closest(eligibleCars);
-                    if (closestEligibleCar) {
-                        this.assignElevator(closestEligibleCar, request);
-                    }
-                    else {
-                        // 如果沒有合適的電梯，請求重新入隊
-                        this.carCallQueue.push(request);
-                        console.log(`請求重新入隊：${this.floorNumberToString(request.floor)} 樓，因為沒有可用電梯`);
+                    // 如果沒有合適的電梯，請求重新入隊
+                    this.carCallQueue.push(request);
+                    console.log(`請求重新入隊：${this.floorNumberToString(request.floor)} 樓，因為沒有最佳電梯`);
+                }
+            }
+        }
+    }
+    // 20250522 Ella 新增：智能電梯選擇邏輯
+    selectBestElevator(eligibleCars, request) {
+        const floorY = this.p.yFromFloor(request.floor);
+        // 計算每台電梯的評分
+        const carScores = eligibleCars.map(car => {
+            let score = 0;
+            const distance = Math.abs(car.y - floorY);
+            const currentFloor = this.p.floorFromY(car.y);
+            // 1. 距離評分（距離越近分數越高，最大100分）
+            const maxDistance = Math.abs(this.p.yFromFloor(this.settings.numFloors) - this.p.yFromFloor(-1));
+            score += (1 - distance / maxDistance) * 100;
+            // 2. 狀態評分
+            if (car.state === CarState.Idle) {
+                score += 50; // 閒置電梯加50分
+            }
+            else if (car.state === CarState.Moving) {
+                score += 20; // 移動中電梯加20分
+            }
+            // 3. 方向相符性評分
+            if (car.state === CarState.Idle || car.state === CarState.Moving) {
+                const requestDirection = request.goingUp;
+                const elevatorDirection = car.goingUp;
+                if (requestDirection === elevatorDirection) {
+                    score += 30; // 方向相同加30分
+                }
+                // 4. 行徑路線評分（電梯是否會經過請求樓層）
+                if (car.state === CarState.Moving) {
+                    const isOnRoute = this.isElevatorOnRoute(car, request.floor, currentFloor);
+                    if (isOnRoute) {
+                        score += 40; // 在行徑路線上加40分
                     }
                 }
             }
+            // 5. 目標樓層方向評分（如果有目標樓層）
+            if (request.destFloor !== undefined) {
+                const requestedDirection = request.destFloor > request.floor;
+                if (requestedDirection === request.goingUp) {
+                    score += 20; // 請求方向一致加20分
+                }
+            }
+            return { car, score, distance };
+        });
+        // 按評分排序，分數高的在前
+        carScores.sort((a, b) => b.score - a.score);
+        // 如果最高分有多個，選擇距離最近的
+        const bestScore = carScores[0].score;
+        const bestCars = carScores.filter(cs => cs.score === bestScore);
+        if (bestCars.length === 1) {
+            console.log(`選擇 ${bestCars[0].car.getCarNumber()} 號電梯，評分：${bestScore.toFixed(1)}`);
+            return bestCars[0].car;
+        }
+        else {
+            // 多個電梯分數相同，選擇距離最近的
+            const closestCar = bestCars.reduce((closest, current) => current.distance < closest.distance ? current : closest);
+            console.log(`多個電梯評分相同 (${bestScore.toFixed(1)})，選擇最近的 ${closestCar.car.getCarNumber()} 號電梯`);
+            return closestCar.car;
+        }
+    }
+    // 20250522 Ella 新增：檢查電梯是否在前往請求樓層的路線上
+    isElevatorOnRoute(car, requestFloor, currentFloor) {
+        if (car.goingUp) {
+            return requestFloor > currentFloor; // 向上行駛且請求樓層在上方
+        }
+        else {
+            return requestFloor < currentFloor; // 向下行駛且請求樓層在下方
         }
     }
     // 20250522 Ella 修改：新增輔助方法
