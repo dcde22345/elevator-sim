@@ -616,7 +616,7 @@ class Dispatcher {
         return this.floorFlow;
     }
     // 20250522 Ella 修改：處理乘客請求
-    requestCar(startFloor, goingUp, destFloor, requestType = RequestType.PickupPassenger) {
+    requestCar(startFloor, goingUp, destFloor, requestType = RequestType.PickupPassenger, rider) {
         // 找出可以同時服務起始樓層和目標樓層的電梯
         const eligibleCars = this.activeCars().filter(car => {
             const canStopAtStart = car.canStopAt(startFloor);
@@ -633,17 +633,24 @@ class Dispatcher {
             console.log(errorMsg);
             return;
         }
-        // 檢查是否已有相同的請求
-        if (!this.carCallQueue.find(request => request.floor === startFloor && request.goingUp === goingUp && request.requestType === requestType)) {
+        // 檢查是否已有相同的請求（不包含乘客綁定的檢查）
+        const existingRequest = this.carCallQueue.find(request => request.floor === startFloor &&
+            request.goingUp === goingUp &&
+            request.requestType === requestType &&
+            !request.rider // 只檢查非乘客綁定的請求
+        );
+        if (!existingRequest) {
             this.carCallQueue.push({
                 floor: startFloor,
                 goingUp: goingUp,
                 destFloor: destFloor, // 新增目標樓層資訊
                 requestTime: Date.now(),
-                requestType: requestType // 新增請求類型
+                requestType: requestType, // 新增請求類型
+                rider: rider // 20250522 Ella 新增：綁定請求發起的乘客
             });
             const typeMsg = requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
-            console.log(`新增${typeMsg}請求：${this.floorNumberToString(startFloor)} 樓${destFloor !== undefined ? ` 到 ${this.floorNumberToString(destFloor)} 樓` : ''}，方向：${goingUp ? '向上' : '向下'}`);
+            const riderMsg = rider ? `（乘客ID: ${rider.constructor.name}）` : '';
+            console.log(`新增${typeMsg}請求：${this.floorNumberToString(startFloor)} 樓${destFloor !== undefined ? ` 到 ${this.floorNumberToString(destFloor)} 樓` : ''}，方向：${goingUp ? '向上' : '向下'}${riderMsg}`);
             console.log(`可用電梯：${eligibleCars.map(car => car.getCarNumber()).join(', ')}號`);
         }
     }
@@ -680,15 +687,33 @@ class Dispatcher {
     // 20250522 Ella 修改：主要處理邏輯
     process() {
         this.processRiders();
+        // 20250522 Ella 新增：定期清理無效請求
+        this.cleanupCompletedRequests();
         if (this.settings.controlMode === 0 /* Auto */) {
             const request = this.carCallQueue.shift();
             if (request) {
+                // 20250522 Ella 新增：檢查請求是否仍然有效
+                if (request.rider) {
+                    // 如果乘客已經上車或離開，則跳過此請求
+                    if (request.rider.state === RiderState.Boarding ||
+                        request.rider.state === RiderState.Riding ||
+                        request.rider.state === RiderState.Exiting ||
+                        request.rider.state === RiderState.Exited) {
+                        console.log(`跳過無效請求：${this.floorNumberToString(request.floor)} 樓（乘客已上車或已離開）`);
+                        return; // 跳過此請求
+                    }
+                }
+                // 檢查樓層是否還有等待的乘客
+                if (!this.hasWaitingRidersOnFloor(request.floor)) {
+                    console.log(`跳過無乘客請求：${this.floorNumberToString(request.floor)} 樓（該樓層沒有等待的乘客）`);
+                    return; // 跳過此請求
+                }
                 // 優先嘗試動態分配給移動中的電梯
                 if (this.assignRequestToMovingElevators(request)) {
                     return; // 成功分配給移動中的電梯，處理完成
                 }
                 const floorY = this.p.yFromFloor(request.floor);
-                // 20250522 Ella 修改：找出可以同時停靠起始和目標樓層的電梯
+                // 找出可以同時停靠起始和目標樓層的電梯
                 const eligibleCars = this.activeCars().filter(car => {
                     // 如果有要排除的電梯，先排除
                     if (request.excludeCar && car === request.excludeCar) {
@@ -983,6 +1008,22 @@ class Dispatcher {
     }
     // 20250522 Ella 新增：動態請求分配 - 讓移動中的電梯接收同方向請求
     assignRequestToMovingElevators(request) {
+        // 20250522 Ella 新增：檢查請求是否仍然有效
+        if (request.rider) {
+            // 如果乘客已經上車或離開，則請求無效
+            if (request.rider.state === RiderState.Boarding ||
+                request.rider.state === RiderState.Riding ||
+                request.rider.state === RiderState.Exiting ||
+                request.rider.state === RiderState.Exited) {
+                console.log(`跳過無效請求：${this.floorNumberToString(request.floor)} 樓（乘客已上車或已離開）`);
+                return true; // 視為已處理，不重新入隊
+            }
+        }
+        // 檢查樓層是否還有等待的乘客
+        if (!this.hasWaitingRidersOnFloor(request.floor)) {
+            console.log(`跳過無乘客請求：${this.floorNumberToString(request.floor)} 樓（該樓層沒有等待的乘客）`);
+            return true; // 視為已處理，不重新入隊
+        }
         const requestFloorY = this.p.yFromFloor(request.floor);
         // 找出正在移動且方向符合的電梯
         const suitableMovingCars = this.activeCars().filter(car => {
@@ -1019,6 +1060,38 @@ class Dispatcher {
         const typeMsg = request.requestType === RequestType.PickupPassenger ? '接乘客' : '送乘客';
         console.log(`動態分配：${closestCar.getCarNumber()} 號電梯（移動中）接收${typeMsg}請求 - ${this.floorNumberToString(request.floor)} 樓`);
         return true; // 成功分配給移動中的電梯
+    }
+    // 20250522 Ella 新增：清理已完成的請求
+    cleanupCompletedRequests() {
+        const initialLength = this.carCallQueue.length;
+        this.carCallQueue = this.carCallQueue.filter(request => {
+            // 如果請求有綁定乘客
+            if (request.rider) {
+                // 檢查乘客是否已經在電梯中或已離開
+                if (request.rider.state === RiderState.Boarding ||
+                    request.rider.state === RiderState.Riding ||
+                    request.rider.state === RiderState.Exiting ||
+                    request.rider.state === RiderState.Exited) {
+                    console.log(`清理已完成的請求：${this.floorNumberToString(request.floor)} 樓（乘客已上車或已離開）`);
+                    return false; // 移除此請求
+                }
+            }
+            // 檢查請求是否過期（超過30秒）
+            const requestAge = Date.now() - request.requestTime;
+            if (requestAge > 30000) {
+                console.log(`清理過期請求：${this.floorNumberToString(request.floor)} 樓（超過30秒）`);
+                return false; // 移除過期請求
+            }
+            return true; // 保留有效請求
+        });
+        if (this.carCallQueue.length !== initialLength) {
+            console.log(`請求清理完成：移除 ${initialLength - this.carCallQueue.length} 個無效請求`);
+        }
+    }
+    // 20250522 Ella 新增：檢查樓層是否還有等待的乘客
+    hasWaitingRidersOnFloor(floor) {
+        return this.riders.some(rider => rider.startFloor === floor &&
+            (rider.state === RiderState.Waiting || rider.state === RiderState.ArrivedAndCalling));
     }
 }
 /** Manages an elevator rider */
@@ -1113,7 +1186,7 @@ class Rider {
         }
     }
     requestCar() {
-        this.dispatcher.requestCar(this.startFloor, this.destFloor > this.startFloor, this.destFloor);
+        this.dispatcher.requestCar(this.startFloor, this.destFloor > this.startFloor, this.destFloor, 'pickup', this);
     }
     waitForCar() {
         const goingUp = this.destFloor > this.startFloor;

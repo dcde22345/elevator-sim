@@ -110,7 +110,7 @@ class Rider {
     }
 
     requestCar() {
-        this.dispatcher.requestCar(this.startFloor, this.destFloor > this.startFloor, this.destFloor);
+        this.dispatcher.requestCar(this.startFloor, this.destFloor > this.startFloor, this.destFloor, 'pickup', this);
     }
 
     waitForCar() {
